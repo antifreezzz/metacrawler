@@ -1,7 +1,7 @@
 {{define "title"}}Мониторинг сервиса — Metacrawler{{end}}
 
 {{define "content"}}
-<div class="space-y-8" hx-ext="sse" sse-connect="/api/worker/events">
+<div class="space-y-8">
   <!-- Заголовок страницы -->
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
@@ -16,7 +16,7 @@
   </div>
 
   <!-- Карточки метрик (обновляются в реальном времени через SSE) -->
-  <div id="metrics-panel" sse-swap="metrics" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  <div id="metrics-panel" sse-swap="metrics" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
     <div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1">
       <div class="text-xs uppercase font-bold text-slate-400">Статус воркера</div>
       <div class="text-2xl font-black text-white flex items-center space-x-2">
@@ -65,34 +65,38 @@
       <!-- 1. Стартовый запуск (New Releases) -->
       <button hx-post="/api/worker/run?mode=new_releases" 
               hx-swap="none"
-              class="p-4 rounded-xl bg-slate-800/80 hover:bg-emerald-950/40 border border-slate-700 hover:border-emerald-500/50 text-left transition-all group cursor-pointer">
+              class="btn-action p-4 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/60 hover:shadow-lg hover:shadow-emerald-950/20 text-left transition-all group cursor-pointer active:scale-98">
         <div class="text-sm font-bold text-white group-hover:text-emerald-400 flex items-center justify-between">
           <span>🚀 Стартовый сбор (New Releases)</span>
-          <span>&rarr;</span>
+          <span class="group-hover:translate-x-0.5 transition-transform">&rarr;</span>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Первые 20 игр из раздела New Releases со сбросом суточного цикла.</p>
+        <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">Первые 20 игр из раздела New Releases со сбросом суточного цикла.</p>
       </button>
 
       <!-- 2. Следующая страница каталога -->
       <button hx-post="/api/worker/run?mode=next_page" 
               hx-swap="none"
-              class="p-4 rounded-xl bg-slate-800/80 hover:bg-emerald-950/40 border border-slate-700 hover:border-emerald-500/50 text-left transition-all group cursor-pointer">
+              class="btn-action p-4 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/60 hover:shadow-lg hover:shadow-emerald-950/20 text-left transition-all group cursor-pointer active:scale-98">
         <div class="text-sm font-bold text-white group-hover:text-emerald-400 flex items-center justify-between">
           <span>📑 Следующая страница (See All)</span>
-          <span>&rarr;</span>
+          <span class="group-hover:translate-x-0.5 transition-transform">&rarr;</span>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Обработать очередную страницу каталога по строгой пагинации без добора.</p>
+        <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">Обработать очередную страницу каталога по строгой пагинации без добора.</p>
       </button>
 
       <!-- 3. Произвольная страница -->
-      <form hx-post="/api/worker/run?mode=custom_page" hx-swap="none" class="p-4 rounded-xl bg-slate-800/80 border border-slate-700 flex flex-col justify-between">
+      <form hx-post="/api/worker/run?mode=custom_page" hx-swap="none" class="p-4 rounded-xl bg-slate-800/80 border border-slate-700 flex flex-col justify-between hover:border-slate-600 transition-colors">
         <div>
-          <div class="text-sm font-bold text-white">🎯 Произвольная страница</div>
+          <div class="text-sm font-bold text-white flex items-center space-x-1.5">
+            <span>🎯</span>
+            <span>Произвольная страница</span>
+          </div>
           <p class="text-xs text-slate-400 mt-1">Укажите номер страницы каталога для сбора:</p>
         </div>
         <div class="flex items-center space-x-2 mt-3">
-          <input type="number" name="page" min="1" max="500" value="1" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white text-center focus:outline-none focus:border-emerald-500">
-          <button type="submit" class="flex-1 px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/40 text-emerald-300 font-semibold text-xs rounded-lg transition-all cursor-pointer">
+          <input type="number" name="page" min="1" max="500" value="1" 
+                 class="w-20 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono text-center focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 shadow-inner transition-all">
+          <button type="submit" class="btn-action flex-1 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-bold text-xs rounded-lg transition-all shadow-md shadow-emerald-950/40 cursor-pointer">
             Запустить
           </button>
         </div>
@@ -102,20 +106,20 @@
 
   <!-- Живой терминал логов -->
   <div class="bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-3 font-mono">
-    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+    <div class="flex items-center justify-between border-b border-slate-800/80 pb-3">
       <div class="flex items-center space-x-2 text-xs text-slate-400">
         <span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
         <span class="w-2.5 h-2.5 rounded-full bg-yellow-500 inline-block"></span>
         <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
         <span class="font-bold text-slate-300 ml-2">Терминал событий воркера</span>
       </div>
-      <div class="text-[11px] text-emerald-400 flex items-center space-x-1">
+      <div class="text-[11px] text-emerald-400 flex items-center space-x-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-0.5 rounded-full">
         <span class="animate-pulse">●</span>
         <span>LIVE SSE</span>
       </div>
     </div>
 
-    <div id="worker-logs" sse-swap="logs" class="h-64 overflow-y-auto space-y-1 text-xs text-slate-300 pr-2">
+    <div id="worker-logs" sse-swap="logs" class="h-64 overflow-y-auto space-y-1.5 text-xs text-slate-300 pr-2">
       {{range .Status.Logs}}
         <div class="text-slate-400"><span class="text-emerald-400">&gt;</span> {{.}}</div>
       {{end}}

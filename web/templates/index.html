@@ -22,31 +22,42 @@
       
       <!-- Поиск по названию -->
       <div class="sm:col-span-2 relative">
+        <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+          </svg>
+        </div>
         <input type="text" 
                name="search" 
-               placeholder="🔍 Поиск по названию игры..." 
+               placeholder="Поиск по названию игры..." 
                value="{{.Filter.Search}}"
-               class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 transition-colors">
+               class="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all shadow-sm">
       </div>
 
       <!-- Фильтр по платформам -->
-      <div>
-        <select name="platform" class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors">
+      <div class="relative">
+        <select name="platform" class="w-full appearance-none bg-slate-800/90 border border-slate-700/80 rounded-xl pl-4 pr-10 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all cursor-pointer shadow-sm">
           <option value="">Все платформы</option>
           {{range .Platforms}}
             <option value="{{.}}" {{if eq $.Filter.Platform .}}selected{{end}}>{{.}}</option>
           {{end}}
         </select>
+        <svg class="w-4 h-4 text-slate-400 pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+        </svg>
       </div>
 
       <!-- Сортировка -->
-      <div>
-        <select name="sort" class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors">
+      <div class="relative">
+        <select name="sort" class="w-full appearance-none bg-slate-800/90 border border-slate-700/80 rounded-xl pl-4 pr-10 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all cursor-pointer shadow-sm">
           <option value="newest" {{if eq .Filter.Sort "newest"}}selected{{end}}>Сначала новые</option>
           <option value="metascore_desc" {{if eq .Filter.Sort "metascore_desc"}}selected{{end}}>По рейтингу Metascore (↓)</option>
           <option value="userscore_desc" {{if eq .Filter.Sort "userscore_desc"}}selected{{end}}>По оценке игроков (↓)</option>
           <option value="title_asc" {{if eq .Filter.Sort "title_asc"}}selected{{end}}>По названию (А-Я)</option>
         </select>
+        <svg class="w-4 h-4 text-slate-400 pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+        </svg>
       </div>
     </form>
   </div>
