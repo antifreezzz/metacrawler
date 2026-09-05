@@ -1,0 +1,59 @@
+{{define "title"}}Каталог игр — Metacrawler{{end}}
+
+{{define "content"}}
+<div class="space-y-6">
+  <!-- Заголовок и фильтры -->
+  <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800/80 shadow-xl space-y-4">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-bold text-white tracking-tight">Каталог игр</h1>
+        <p class="text-sm text-slate-400">Сбор свежих релизов и глубокий анализ отзывов Metacritic</p>
+      </div>
+      <div class="text-xs text-slate-400">
+        Страница обхода каталога: <span class="font-mono text-emerald-400 font-semibold">{{.CurrentPage}}</span>
+      </div>
+    </div>
+
+    <!-- Форма поиска и фильтрации -->
+    <form class="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-3 pt-2"
+          hx-get="/api/games"
+          hx-trigger="change, keyup delay:300ms from:input[name='search']"
+          hx-target="#games-list">
+      
+      <!-- Поиск по названию -->
+      <div class="sm:col-span-2 relative">
+        <input type="text" 
+               name="search" 
+               placeholder="🔍 Поиск по названию игры..." 
+               value="{{.Filter.Search}}"
+               class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 transition-colors">
+      </div>
+
+      <!-- Фильтр по платформам -->
+      <div>
+        <select name="platform" class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors">
+          <option value="">Все платформы</option>
+          {{range .Platforms}}
+            <option value="{{.}}" {{if eq $.Filter.Platform .}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+
+      <!-- Сортировка -->
+      <div>
+        <select name="sort" class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors">
+          <option value="newest" {{if eq .Filter.Sort "newest"}}selected{{end}}>Сначала новые</option>
+          <option value="metascore_desc" {{if eq .Filter.Sort "metascore_desc"}}selected{{end}}>По рейтингу Metascore (↓)</option>
+          <option value="userscore_desc" {{if eq .Filter.Sort "userscore_desc"}}selected{{end}}>По оценке игроков (↓)</option>
+          <option value="title_asc" {{if eq .Filter.Sort "title_asc"}}selected{{end}}>По названию (А-Я)</option>
+        </select>
+      </div>
+    </form>
+  </div>
+
+  <!-- Список игр -->
+  <div id="games-list">
+    {{template "games_list" .}}
+  </div>
+</div>
+{{end}}

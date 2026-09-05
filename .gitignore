@@ -1,0 +1,19 @@
+# Binaries
+/server
+*.exe
+*.test
+
+# Environment variables
+.env
+
+# Database & runtime files
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# OS & Editor files
+.DS_Store
+.vscode/
+.idea/

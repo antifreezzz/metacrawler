@@ -1,0 +1,176 @@
+{{define "title"}}{{.Game.Title}} — Metacrawler{{end}}
+
+{{define "content"}}
+<div class="space-y-8">
+  <!-- Навигация назад -->
+  <div>
+    <a href="/" class="inline-flex items-center text-sm font-medium text-slate-400 hover:text-emerald-400 transition-colors">
+      &larr; Назад в каталог
+    </a>
+  </div>
+
+  <!-- Главный блок игры -->
+  <div class="bg-slate-900/60 rounded-3xl border border-slate-800 p-6 md:p-8 space-y-6">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+      <!-- Обложка и видео -->
+      <div class="space-y-4">
+        <div class="aspect-video w-full rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 shadow-xl">
+          {{if .Game.CoverURL}}
+            <img src="{{.Game.CoverURL}}" alt="{{.Game.Title}}" class="w-full h-full object-cover">
+          {{else}}
+            <div class="w-full h-full flex items-center justify-center text-slate-700 text-5xl">🎮</div>
+          {{end}}
+        </div>
+
+        {{if .Game.VideoURL}}
+          <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+            <span class="text-slate-400 font-semibold">🎬 Трейлер / Видео:</span>
+            <a href="{{.Game.VideoURL}}" target="_blank" rel="noopener" class="text-emerald-400 hover:underline block truncate mt-1">
+              {{.Game.VideoURL}}
+            </a>
+          </div>
+        {{end}}
+      </div>
+
+      <!-- Метаданные игры -->
+      <div class="lg:col-span-2 space-y-4">
+        <div>
+          <h1 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">{{.Game.Title}}</h1>
+          {{if .Game.Developer}}
+            <p class="text-slate-400 text-sm mt-1">Разработчик: <span class="text-slate-200 font-semibold">{{.Game.Developer}}</span></p>
+          {{end}}
+        </div>
+
+        <!-- Оценки по платформам -->
+        <div class="pt-2">
+          <h3 class="text-xs uppercase tracking-wider text-slate-400 font-bold mb-3">Оценки по платформам:</h3>
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {{range .Game.Platforms}}
+            <div class="bg-slate-800/80 p-3 rounded-xl border border-slate-700/80 space-y-1">
+              <div class="text-xs font-bold text-slate-300 uppercase truncate">{{.Platform}}</div>
+              <div class="flex items-center space-x-2">
+                {{if .Metascore}}
+                  <span class="px-2 py-0.5 rounded text-xs {{if isScoreHigh .Metascore}}score-green{{else if isScoreMid .Metascore}}score-yellow{{else}}score-red{{end}} font-extrabold">
+                    {{formatScore .Metascore}}
+                  </span>
+                {{else}}
+                  <span class="px-2 py-0.5 rounded text-xs score-tbd font-semibold">tbd</span>
+                {{end}}
+                {{if .Userscore}}
+                  <span class="text-xs text-emerald-400 font-bold">User: {{formatUserScore .Userscore}}</span>
+                {{end}}
+              </div>
+            </div>
+            {{end}}
+          </div>
+        </div>
+
+        <!-- Описание -->
+        {{if .Game.Description}}
+        <div class="pt-2 space-y-2">
+          <h3 class="text-xs uppercase tracking-wider text-slate-400 font-bold">Описание:</h3>
+          <p class="text-slate-300 text-sm leading-relaxed whitespace-pre-line">{{.Game.Description}}</p>
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </div>
+
+  <!-- Блок резюме отзывов критиков и игроков -->
+  <div class="space-y-4">
+    <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+      <span>💬</span>
+      <span>Анализ отзывов и резюме (по платформам)</span>
+    </h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {{range .Game.Platforms}}
+      <div class="bg-slate-900/60 rounded-2xl border border-slate-800 p-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <span class="text-base font-bold text-emerald-400 uppercase tracking-wide">Платформа: {{.Platform}}</span>
+          {{if .Metascore}}
+            <span class="text-xs font-semibold px-2 py-1 rounded bg-slate-800 border border-slate-700">Metascore: {{formatScore .Metascore}}</span>
+          {{end}}
+        </div>
+
+        {{if .Summary}}
+          <!-- Критики -->
+          <div class="space-y-2">
+            <div class="text-xs font-bold uppercase text-slate-400 flex items-center space-x-1.5">
+              <span>🧑‍💼</span>
+              <span>Отзывы критиков:</span>
+            </div>
+            {{if .Summary.CriticPros}}
+              <div class="text-xs p-3 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-emerald-200">
+                <span class="font-bold text-emerald-400">👍 Что нравится:</span> {{.Summary.CriticPros}}
+              </div>
+            {{end}}
+            {{if .Summary.CriticCons}}
+              <div class="text-xs p-3 rounded-lg bg-rose-950/30 border border-rose-500/20 text-rose-200">
+                <span class="font-bold text-rose-400">👎 Что не нравится:</span> {{.Summary.CriticCons}}
+              </div>
+            {{end}}
+          </div>
+
+          <!-- Пользователи -->
+          <div class="space-y-2 pt-2">
+            <div class="text-xs font-bold uppercase text-slate-400 flex items-center space-x-1.5">
+              <span>👥</span>
+              <span>Отзывы игроков:</span>
+            </div>
+            {{if .Summary.UserPros}}
+              <div class="text-xs p-3 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-emerald-200">
+                <span class="font-bold text-emerald-400">👍 Что нравится:</span> {{.Summary.UserPros}}
+              </div>
+            {{end}}
+            {{if .Summary.UserCons}}
+              <div class="text-xs p-3 rounded-lg bg-rose-950/30 border border-rose-500/20 text-rose-200">
+                <span class="font-bold text-rose-400">👎 Что не нравится:</span> {{.Summary.UserCons}}
+              </div>
+            {{end}}
+          </div>
+        {{else}}
+          <div class="text-center py-6 text-xs text-slate-500 italic">
+            Резюме отзывов для этой платформы пока формируется воркером...
+          </div>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  <!-- Блок похожих игр -->
+  <div class="space-y-4 pt-4">
+    <div class="flex items-center space-x-2">
+      <span class="text-xl">✨</span>
+      <h2 class="text-xl font-bold text-white">Похожие игры в базе:</h2>
+    </div>
+
+    {{if not .SimilarGames}}
+      <div class="p-6 text-center text-sm text-slate-500 bg-slate-900/30 rounded-2xl border border-dashed border-slate-800">
+        Похожие игры пока не найдены или в базе недостаточно данных для сравнения векторов.
+      </div>
+    {{else}}
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        {{range .SimilarGames}}
+        <a href="/games/{{.Slug}}" class="group block bg-slate-900/60 rounded-xl border border-slate-800 p-3 hover:border-emerald-500/50 hover:shadow-lg transition-all">
+          <div class="aspect-video bg-slate-950 rounded-lg overflow-hidden mb-2">
+            {{if .CoverURL}}
+              <img src="{{.CoverURL}}" alt="{{.Title}}" class="w-full h-full object-cover group-hover:scale-105 transition-transform" loading="lazy">
+            {{else}}
+              <div class="w-full h-full flex items-center justify-center text-slate-700 font-bold">🎮</div>
+            {{end}}
+          </div>
+          <div class="text-xs font-bold text-white group-hover:text-emerald-400 transition-colors line-clamp-1">
+            {{.Title}}
+          </div>
+          {{if .Developer}}
+            <div class="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{{.Developer}}</div>
+          {{end}}
+        </a>
+        {{end}}
+      </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

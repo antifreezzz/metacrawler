@@ -1,0 +1,53 @@
+{{define "games_list"}}
+{{if not .Games}}
+  <div class="text-center py-16 bg-slate-900/30 rounded-2xl border border-dashed border-slate-800">
+    <div class="text-4xl mb-2">🔍</div>
+    <h3 class="text-lg font-semibold text-slate-300">Игры не найдены</h3>
+    <p class="text-sm text-slate-500 mt-1">Попробуйте изменить поисковый запрос или запустите сбор новых игр.</p>
+  </div>
+{{else}}
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+    {{range .Games}}
+    <a href="/games/{{.Slug}}" class="group block bg-slate-900/60 rounded-2xl border border-slate-800/80 overflow-hidden hover:border-emerald-500/50 hover:shadow-2xl hover:shadow-emerald-950/20 transition-all duration-300">
+      <!-- Обложка -->
+      <div class="relative aspect-video bg-slate-950 overflow-hidden">
+        {{if .CoverURL}}
+          <img src="{{.CoverURL}}" alt="{{.Title}}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy">
+        {{else}}
+          <div class="w-full h-full flex items-center justify-center text-slate-700 text-3xl font-bold">🎮</div>
+        {{end}}
+      </div>
+
+      <!-- Контент карточки -->
+      <div class="p-4 space-y-3">
+        <div>
+          <h2 class="font-bold text-white text-base group-hover:text-emerald-400 transition-colors line-clamp-1">
+            {{.Title}}
+          </h2>
+          {{if .Developer}}
+            <p class="text-xs text-slate-400 mt-0.5">{{.Developer}}</p>
+          {{end}}
+        </div>
+
+        <!-- Бейджи платформ и оценок -->
+        <div class="flex flex-wrap gap-1.5 pt-1">
+          {{range .Platforms}}
+            <div class="flex items-center space-x-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-800/90 border border-slate-700/60">
+              <span class="text-slate-300 uppercase">{{.Platform}}</span>
+              {{if .Metascore}}
+                <span class="px-1.5 py-0.2 rounded text-[10px] {{if isScoreHigh .Metascore}}score-green{{else if isScoreMid .Metascore}}score-yellow{{else}}score-red{{end}} font-bold">
+                  {{formatScore .Metascore}}
+                </span>
+              {{end}}
+              {{if .Userscore}}
+                <span class="text-[10px] text-emerald-400 font-bold ml-1">★ {{formatUserScore .Userscore}}</span>
+              {{end}}
+            </div>
+          {{end}}
+        </div>
+      </div>
+    </a>
+    {{end}}
+  </div>
+{{end}}
+{{end}}

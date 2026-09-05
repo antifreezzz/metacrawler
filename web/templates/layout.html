@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{block "title" .}}Metacrawler — Аналитика игр Metacritic{{end}}</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+  <style>
+    body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+    .score-green { background-color: #10b981; color: #000; }
+    .score-yellow { background-color: #f59e0b; color: #000; }
+    .score-red { background-color: #ef4444; color: #fff; }
+    .score-tbd { background-color: #475569; color: #fff; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+  <!-- Навигация и панель статуса -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <a href="/" class="flex items-center space-x-2 text-xl font-black tracking-tight text-white hover:text-emerald-400 transition-colors">
+          <span class="text-2xl">🎮</span>
+          <span>META<span class="text-emerald-400">CRAWLER</span></span>
+        </a>
+      </div>
+
+      <!-- Виджет статуса воркера с live SSE -->
+      <div hx-ext="sse" sse-connect="/api/worker/events" sse-swap="status" class="flex items-center space-x-4">
+        <div id="worker-status-badge" class="flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="text-slate-300 font-medium">Воркер: Готов</span>
+        </div>
+
+        <button hx-post="/api/worker/run" 
+                hx-swap="none"
+                class="inline-flex items-center px-3 py-1.5 border border-emerald-500/30 text-xs font-semibold rounded-lg text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95 transition-all cursor-pointer">
+          ⚡ Запустить сбор
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Основной контент -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {{block "content" .}}{{end}}
+  </main>
+
+  <footer class="border-t border-slate-800 py-6 text-center text-xs text-slate-500">
+    <p>Metacrawler &copy; 2026. Парсер и аналитическая платформа игр с поддержкой OpenAI и эмбеддингов.</p>
+  </footer>
+</body>
+</html>
