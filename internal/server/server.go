@@ -178,6 +178,9 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Replace-Url", "/?"+r.URL.Query().Encode())
+	}
 	if err := s.listTemplate.ExecuteTemplate(w, "games_list", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -324,11 +327,11 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			badgeColor := "bg-emerald-400"
+			badgeColor := "status-ready"
 			if status.Status == "Running" {
-				badgeColor = "bg-amber-400 animate-pulse"
+				badgeColor = "status-running"
 			} else if status.Status == "Error" {
-				badgeColor = "bg-rose-500"
+				badgeColor = "status-error"
 			}
 
 			taskDesc := status.CurrentTask
@@ -337,7 +340,7 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// 1. Событие для бейджа в шапке (обновляет внутренности #worker-status-badge)
-			badgeHTML := fmt.Sprintf(`<span class="w-2 h-2 rounded-full %s"></span><span class="text-slate-300 font-medium">%s</span>`, badgeColor, template.HTMLEscapeString(taskDesc))
+			badgeHTML := fmt.Sprintf(`<span class="dot %s"></span><span>%s</span>`, badgeColor, template.HTMLEscapeString(taskDesc))
 			_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", strings.ReplaceAll(badgeHTML, "\n", ""))
 
 			// 2. Событие для панели метрик мониторинга (обновляет внутренности #metrics-panel)
@@ -345,7 +348,7 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 			if !status.LastRunAt.IsZero() {
 				lastRunStr = status.LastRunAt.In(domain.TimezoneUTC3).Format("15:04:05 (02.01)")
 			}
-			metricsHTML := fmt.Sprintf(`<div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Статус воркера</div><div class="text-2xl font-black text-white flex items-center space-x-2"><span class="w-3 h-3 rounded-full %s"></span><span>%s</span></div><div class="text-xs text-slate-500 truncate pt-1">%s</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Обработано в батче</div><div class="text-2xl font-black text-emerald-400">%d / %d</div><div class="text-xs text-slate-500 pt-1">Успешно: %d игр</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Текущая страница каталога</div><div class="text-2xl font-black text-indigo-400">№ %s</div><div class="text-xs text-slate-500 pt-1">SEE ALL пагинация</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Последний запуск</div><div class="text-lg font-bold text-slate-300">%s</div><div class="text-xs text-slate-500 pt-1">Расписание: 1 раз в час</div></div>`,
+			metricsHTML := fmt.Sprintf(`<div><div>Статус воркера</div><div class="metric-status"><span class="dot %s"></span><span>%s</span></div><div>%s</div></div><div><div>Обработано в партии</div><div>%d / %d</div><div>Успешно: %d игр</div></div><div><div>Страница каталога</div><div>№ %s</div><div>Последовательный обход</div></div><div><div>Последний запуск</div><div>%s</div><div>Автоматически раз в час</div></div>`,
 				badgeColor, status.Status, template.HTMLEscapeString(taskDesc),
 				status.CurrentIndex, status.TotalInBatch, status.ProcessedCount,
 				status.CurrentPage, lastRunStr,
@@ -355,7 +358,7 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 			// 3. Событие для логов (обновляет внутренности #worker-logs)
 			var logsBuilder strings.Builder
 			for _, l := range status.Logs {
-				logsBuilder.WriteString(fmt.Sprintf(`<div class="text-slate-400"><span class="text-emerald-400">&gt;</span> %s</div>`, template.HTMLEscapeString(l)))
+				logsBuilder.WriteString(fmt.Sprintf(`<div class="muted">&gt; %s</div>`, template.HTMLEscapeString(l)))
 			}
 			_, _ = fmt.Fprintf(w, "event: logs\ndata: %s\n\n", strings.ReplaceAll(logsBuilder.String(), "\n", ""))
 

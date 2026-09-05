@@ -1,137 +1,1148 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru" class="dark">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{block "title" .}}Metacrawler — Аналитика игр Metacritic{{end}}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            slate: {
-              950: '#020617',
-            }
-          }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111513" />
+    <title>{{block "title" .}}Metacrawler{{end}}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.10"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111513;
+        --panel: #191e1b;
+        --raised: #222923;
+        --line: #303932;
+        --text: #f0f3ed;
+        --muted: #a1ada3;
+        --accent: #c4f078;
+      }
+      * {
+        box-sizing: border-box;
+        min-width: 0;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          15px/1.6 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+      button,
+      a,
+      input,
+      select {
+        touch-action: manipulation;
+      }
+      button {
+        cursor: pointer;
+      }
+      svg {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+      }
+      img {
+        display: block;
+        max-width: 100%;
+      }
+      img[hidden] {
+        display: none;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: clamp(30px, 4.5vw, 56px);
+        font-weight: 650;
+        letter-spacing: -0.05em;
+        line-height: 1.1;
+      }
+      h2 {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+      }
+      h3 {
+        font-weight: 600;
+      }
+      a,
+      button,
+      input,
+      select {
+        transition:
+          background 0.18s,
+          border-color 0.18s,
+          color 0.18s,
+          transform 0.18s;
+      }
+      a:focus-visible,
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+      }
+      ::selection {
+        background: var(--accent);
+        color: var(--bg);
+      }
+      .shell {
+        width: min(1360px, 100%);
+        margin: auto;
+        padding-inline: 40px;
+      }
+      .topbar {
+        border-bottom: 1px solid var(--line);
+        background: #111513f5;
+      }
+      .header-row {
+        display: flex;
+        align-items: center;
+        gap: 40px;
+        min-height: 88px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 21px;
+        font-weight: 700;
+        letter-spacing: -0.8px;
+        white-space: nowrap;
+      }
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        background: var(--accent);
+        color: #182014;
+        border-radius: 10px;
+      }
+      .brand-mark svg {
+        width: 23px;
+        height: 23px;
+      }
+      .nav {
+        display: flex;
+        gap: 6px;
+        align-self: stretch;
+        align-items: center;
+      }
+      .nav a {
+        color: var(--muted);
+        padding: 10px 15px;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+      .nav a:hover {
+        color: var(--text);
+        background: var(--panel);
+      }
+      .nav a[aria-current="page"] {
+        color: var(--accent);
+        background: #c4f0780d;
+      }
+      .header-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        max-width: 200px;
+      }
+      .status span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+        flex-shrink: 0;
+      }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        min-height: 44px;
+        padding: 10px 18px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--raised);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .button:hover {
+        background: #303a31;
+        border-color: #52624c;
+      }
+      .button.primary {
+        background: var(--accent);
+        color: #1b2714;
+        border-color: var(--accent);
+      }
+      .button.primary:hover {
+        background: #d4ff8b;
+      }
+      .button:disabled,
+      .htmx-request.btn-action {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      .main {
+        padding-top: 48px;
+        padding-bottom: 72px;
+        min-height: calc(100vh - 174px);
+      }
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--accent);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-weight: 600;
+        margin-bottom: 18px;
+      }
+      .eyebrow:before {
+        content: "";
+        width: 20px;
+        height: 1px;
+        background: var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .intro {
+        max-width: 610px;
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.8;
+      }
+      .hero {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 32px;
+        margin-bottom: 38px;
+      }
+      .hero-note {
+        color: var(--muted);
+        font-size: 12px;
+        border-left: 1px solid var(--line);
+        padding-left: 22px;
+        flex-shrink: 0;
+      }
+      .hero-note strong {
+        display: block;
+        color: var(--text);
+        font-size: 23px;
+        font-weight: 500;
+      }
+      .filters {
+        display: grid;
+        grid-template-columns: minmax(200px, 1fr) 200px 230px auto;
+        align-items: end;
+        gap: 14px;
+        padding: 20px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        margin-bottom: 30px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .field > span {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .control {
+        width: 100%;
+        min-height: 46px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 11px 13px;
+        font-size: 14px;
+      }
+      .control:hover {
+        border-color: #59664f;
+      }
+      .control::placeholder {
+        color: #89978b;
+      }
+      .search-wrap {
+        position: relative;
+      }
+      .search-wrap svg {
+        position: absolute;
+        left: 13px;
+        top: 13px;
+        color: var(--muted);
+      }
+      .search-wrap input {
+        padding-left: 43px;
+      }
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+      }
+      .section-heading h2 {
+        font-size: 18px;
+      }
+      .count {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+        margin-left: 10px;
+      }
+      .legend {
+        display: flex;
+        gap: 16px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .legend span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .legend i {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+      .legend i.user {
+        border-radius: 50%;
+        background: #bac6dc;
+      }
+      .game-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 24px;
+      }
+      .game-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .game-card:hover {
+        border-color: #74865f;
+        transform: translateY(-4px);
+      }
+      .cover {
+        aspect-ratio: 16/10;
+        background: linear-gradient(145deg, #303b2b, #18201e);
+        overflow: hidden;
+        position: relative;
+        display: grid;
+        place-items: center;
+      }
+      .cover img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        position: absolute;
+        inset: 0;
+        transition: transform 0.35s;
+      }
+      .game-card:hover .cover img {
+        transform: scale(1.04);
+      }
+      .cover-placeholder {
+        font-size: 48px;
+        color: #8da879;
+        letter-spacing: -5px;
+        font-weight: 800;
+      }
+      .cover:after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        box-shadow: inset 0 -30px 35px -30px #0008;
+        pointer-events: none;
+      }
+      .card-body {
+        padding: 19px;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+      }
+      .card-title {
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+      .card-developer {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 5px;
+        margin-bottom: 18px;
+      }
+      .platforms {
+        display: grid;
+        gap: 9px;
+        margin-top: auto;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .platform-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 11px;
+      }
+      .platform-name {
+        margin-right: auto;
+        color: #c1cbc2;
+        text-transform: uppercase;
+        overflow-wrap: anywhere;
+      }
+      .score {
+        min-width: 30px;
+        min-height: 26px;
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        padding: 2px 6px;
+        border-radius: 5px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .score-green {
+        background: #c4f078;
+        color: #243316;
+      }
+      .score-yellow {
+        background: #efcc79;
+        color: #3d3012;
+      }
+      .score-red {
+        background: #f49a8b;
+        color: #441c14;
+      }
+      .score-tbd {
+        background: #303932;
+        color: #b1bbb2;
+      }
+      .user-score {
+        color: #bac6dc;
+        min-width: 38px;
+        text-align: right;
+        font-size: 12px;
+      }
+      .empty {
+        border: 1px dashed #45523e;
+        border-radius: 16px;
+        padding: 65px 24px;
+        text-align: center;
+        background: radial-gradient(ellipse at top, #c4f07809, transparent 70%);
+      }
+      .empty-icon {
+        width: 56px;
+        height: 56px;
+        display: grid;
+        place-items: center;
+        background: var(--raised);
+        border-radius: 16px;
+        color: var(--accent);
+        margin: 0 auto 20px;
+      }
+      .empty p {
+        max-width: 440px;
+        margin: 12px auto 24px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .results {
+        transition: opacity 0.2s;
+      }
+      .results.htmx-request {
+        opacity: 0.45;
+      }
+      .loading {
+        display: none;
+        color: var(--accent);
+        font-size: 12px;
+      }
+      .htmx-request.loading {
+        display: block;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 28px;
+      }
+      .stack {
+        display: grid;
+        gap: 30px;
+      }
+      .back {
+        display: inline-flex;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 28px;
+      }
+      .back:hover {
+        color: var(--accent);
+      }
+      .detail-hero {
+        display: grid;
+        grid-template-columns: 1fr 1.5fr;
+        gap: 36px;
+        align-items: start;
+      }
+      .detail-cover {
+        border-radius: 12px;
+      }
+      .detail-copy h1 {
+        font-size: clamp(28px, 4vw, 44px);
+        overflow-wrap: anywhere;
+      }
+      .detail-copy .muted {
+        margin: 12px 0 24px;
+      }
+      .body-copy {
+        font-size: 14px;
+        line-height: 1.9;
+        color: #c6cec5;
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+      }
+      .rating-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .rating {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .rating h3 {
+        font-size: 12px;
+        text-transform: uppercase;
+        margin-bottom: 12px;
+        overflow-wrap: anywhere;
+      }
+      .rating-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 7px;
+      }
+      .review-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+      }
+      .review-title {
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 14px;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .review-title h3 {
+        font-size: 16px;
+        text-transform: uppercase;
+        color: var(--accent);
+        overflow-wrap: anywhere;
+      }
+      .review-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 20px 0 10px;
+      }
+      .opinion {
+        padding: 14px 16px;
+        border-left: 2px solid #779b54;
+        background: #c4f07807;
+        border-radius: 0 8px 8px 0;
+        color: #ccd9c3;
+        font-size: 13px;
+        line-height: 1.8;
+        margin-top: 10px;
+        overflow-wrap: anywhere;
+      }
+      .opinion.negative {
+        border-color: #bc8376;
+        background: #f49a8b07;
+        color: #d9c8c3;
+      }
+      .opinion strong {
+        display: block;
+        color: var(--text);
+        font-size: 12px;
+        margin-bottom: 3px;
+      }
+      .video-panel {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 30px;
+      }
+      .small-grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+      .small-grid .card-title {
+        font-size: 14px;
+      }
+      .footer {
+        border-top: 1px solid var(--line);
+        color: #8e9c90;
+        font-size: 11px;
+      }
+      .footer .shell {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        padding-block: 24px;
+      }
+      .footer strong {
+        color: #c1cbc2;
+        font-weight: 500;
+      }
+      .skip-link {
+        position: fixed;
+        left: 16px;
+        top: -100px;
+        z-index: 100;
+        background: var(--accent);
+        color: #111;
+        padding: 12px;
+      }
+      .skip-link:focus {
+        top: 16px;
+      }
+      #toast-container {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 100;
+        display: grid;
+        gap: 8px;
+        max-width: calc(100vw - 32px);
+      }
+      .toast {
+        padding: 15px 20px;
+        border: 1px solid #74865f;
+        border-radius: 10px;
+        background: #252e23;
+        color: var(--text);
+        box-shadow: 0 12px 40px #0005;
+        font-size: 13px;
+      }
+      .toast.error {
+        border-color: #bc8376;
+      }
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .metric-grid > div {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 22px;
+      }
+      .metric-grid > div > div:first-child {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        font-weight: 500;
+      }
+      .metric-grid > div > div:nth-child(2) {
+        margin: 12px 0;
+        color: var(--text);
+        font-size: 25px;
+        font-weight: 600;
+      }
+      .metric-grid > div > div:last-child {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .action-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .action-card {
+        display: flex;
+        flex-direction: column;
+        align-items: start;
+        text-align: left;
+        gap: 12px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 22px;
+        color: var(--text);
+      }
+      button.action-card:hover {
+        border-color: #74865f;
+        background: #21291e;
+      }
+      .action-number {
+        font-size: 11px;
+        color: var(--accent);
+        letter-spacing: 0.1em;
+      }
+      .action-card h3 {
+        font-size: 16px;
+      }
+      .action-card p {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .action-card .field {
+        width: 100%;
+      }
+      .page-control {
+        display: flex;
+        gap: 10px;
+        width: 100%;
+        margin-top: auto;
+      }
+      .page-control input {
+        width: 80px;
+      }
+      .page-control .button {
+        flex: 1;
+      }
+      .log-panel {
+        background: #0d110f;
+      }
+      .log-controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .log-controls label {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input[type="checkbox"] {
+        accent-color: var(--accent);
+      }
+      #worker-logs {
+        height: 300px;
+        overflow: auto;
+        font:
+          12px/1.9 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      #worker-logs:empty:before {
+        content: "Событий пока нет. Здесь появится ход сбора игр.";
+        color: var(--muted);
+      }
+      .connection {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .status-ready {
+        background: var(--accent);
+      }
+      .status-running {
+        background: #efcc79;
+      }
+      .status-error {
+        background: #f49a8b;
+      }
+      .metric-status {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      @media (min-width: 1500px) {
+        .main {
+          padding-top: 64px;
+        }
+        .game-grid {
+          gap: 28px;
         }
       }
-    }
-  </script>
-  <script src="https://unpkg.com/htmx.org@2.0.10"></script>
-  <script src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
-  <style>
-    body { background-color: #0b1120; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
-    
-    /* Modern game score badges */
-    .score-green { background: linear-gradient(135deg, #10b981, #059669); color: #022c22; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.4); }
-    .score-yellow { background: linear-gradient(135deg, #f59e0b, #d97706); color: #451a03; font-weight: 800; border: 1px solid rgba(245, 158, 11, 0.4); }
-    .score-red { background: linear-gradient(135deg, #ef4444, #dc2626); color: #ffffff; font-weight: 800; border: 1px solid rgba(239, 68, 68, 0.4); }
-    .score-tbd { background: #334155; color: #94a3b8; font-weight: 600; border: 1px solid #475569; }
-
-    /* Custom scrollbars */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #090d16; }
-    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
-    ::-webkit-scrollbar-thumb:hover { background: #475569; }
-    * { scrollbar-width: thin; scrollbar-color: #334155 #090d16; }
-
-    /* Number inputs reset default arrows */
-    input[type="number"]::-webkit-inner-spin-button,
-    input[type="number"]::-webkit-outer-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
-    }
-    input[type="number"] {
-      -moz-appearance: textfield;
-    }
-
-    /* HTMX loading states */
-    .htmx-request.btn-action { opacity: 0.7; pointer-events: none; }
-  </style>
-</head>
-<body class="min-h-screen flex flex-col antialiased bg-[#0b1120] text-slate-100" hx-ext="sse" sse-connect="/api/worker/events">
-  <!-- Навигация и панель статуса -->
-  <header class="border-b border-slate-800/80 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <div class="flex items-center space-x-6">
-        <a href="/" class="flex items-center space-x-2 text-xl font-black tracking-tight text-white hover:text-emerald-400 transition-colors">
-          <span class="text-2xl">🎮</span>
-          <span>META<span class="text-emerald-400">CRAWLER</span></span>
-        </a>
-
-        <nav class="hidden sm:flex items-center space-x-2 text-xs font-semibold text-slate-300">
-          <a href="/" class="px-3 py-1.5 rounded-lg hover:text-emerald-400 hover:bg-slate-800/60 transition-all">Каталог</a>
-          <a href="/monitoring" class="px-3 py-1.5 rounded-lg hover:text-emerald-400 hover:bg-slate-800/60 transition-all flex items-center space-x-1">
-            <span>📊 Мониторинг & Запуск</span>
-          </a>
+      @media (max-width: 1100px) {
+        .shell {
+          padding-inline: 28px;
+        }
+        .header-row {
+          gap: 20px;
+        }
+        .header-actions {
+          gap: 12px;
+        }
+        .status {
+          max-width: 130px;
+        }
+        .game-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .small-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .filters {
+          grid-template-columns: 1fr 180px 210px;
+        }
+        .filters > .button {
+          grid-column: 1/-1;
+          justify-self: end;
+        }
+        .action-grid {
+          grid-template-columns: 1fr;
+        }
+        .action-card {
+          gap: 8px;
+        }
+        .metric-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 760px) {
+        .shell {
+          padding-inline: 20px;
+        }
+        .header-row {
+          flex-wrap: wrap;
+          gap: 0;
+          min-height: 0;
+          padding-top: 18px;
+        }
+        .brand {
+          font-size: 19px;
+        }
+        .header-actions {
+          gap: 0;
+        }
+        .header-actions .status {
+          display: none;
+        }
+        .header-actions .button {
+          font-size: 12px;
+          min-height: 44px;
+          padding: 8px 12px;
+        }
+        .nav {
+          order: 3;
+          width: 100%;
+          margin-top: 15px;
+          gap: 24px;
+        }
+        .nav a {
+          padding: 12px 0;
+          border-radius: 0;
+          border-bottom: 2px solid transparent;
+        }
+        .nav a[aria-current="page"] {
+          background: none;
+          border-color: var(--accent);
+        }
+        .main {
+          padding-top: 32px;
+          padding-bottom: 44px;
+        }
+      .hero {
+        margin-bottom: 28px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 18px;
+        }
+        .hero-note {
+          display: none;
+        }
+        .intro {
+          font-size: 14px;
+          margin-top: 15px;
+        }
+        .filters {
+          grid-template-columns: 1fr 1fr;
+          padding: 16px;
+          gap: 12px;
+        }
+        .filters > .field:first-child {
+          grid-column: 1/-1;
+        }
+        .filters > .button {
+          justify-self: stretch;
+          grid-column: 1/-1;
+        }
+        .game-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+        .card-body {
+          padding: 15px;
+        }
+        .card-title {
+          font-size: 15px;
+        }
+        .detail-hero,
+        .video-panel {
+          grid-template-columns: 1fr;
+          gap: 24px;
+        }
+        .review-grid {
+          grid-template-columns: 1fr;
+        }
+        .panel {
+          padding: 22px;
+        }
+        .small-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .footer .shell {
+          flex-direction: column;
+          gap: 4px;
+        }
+        .legend {
+          gap: 10px;
+        }
+        .stack {
+          gap: 26px;
+        }
+      }
+      @media (max-width: 440px) {
+        .shell {
+          padding-inline: 16px;
+        }
+        .brand {
+          font-size: 17px;
+          gap: 8px;
+        }
+        .brand-mark {
+          width: 30px;
+          height: 30px;
+        }
+        .header-actions .button {
+          padding: 8px 10px;
+        }
+        .header-actions .button svg {
+          display: none;
+        }
+        .game-grid {
+          grid-template-columns: 1fr;
+        }
+        .small-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .small-grid .card-body {
+          padding: 12px;
+        }
+        .small-grid .card-title {
+          font-size: 13px;
+        }
+        .filters {
+          grid-template-columns: 1fr;
+        }
+        .filters > .field {
+          grid-column: 1/-1;
+        }
+        .control {
+          font-size: 16px;
+        }
+        .metric-grid {
+          gap: 10px;
+        }
+        .metric-grid > div {
+          padding: 15px;
+        }
+        .metric-grid > div > div:nth-child(2) {
+          font-size: 20px;
+        }
+        .panel {
+          padding: 18px;
+        }
+        .section-heading {
+          align-items: flex-start;
+        }
+        .intro {
+          line-height: 1.7;
+        }
+        .rating-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *:before,
+        *:after {
+          transition: none !important;
+          animation: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body hx-ext="sse" sse-connect="/api/worker/events">
+    <a class="skip-link" href="#main">Перейти к содержимому</a>
+    <header class="topbar">
+      <div class="shell header-row">
+        <a class="brand" href="/" aria-label="Metacrawler — главная"
+          ><span class="brand-mark"
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M3 17V7l5 6 4-6 4 6 5-6v10" /></svg></span
+          ><span
+            >metacrawler<span style="color: var(--accent)">.</span></span
+          ></a
+        >
+        <nav class="nav" aria-label="Основная навигация">
+          <a href="/">Каталог игр</a><a href="/monitoring">Мониторинг</a>
         </nav>
-      </div>
-
-      <!-- Виджет статуса воркера с live SSE -->
-      <div class="flex items-center space-x-3">
-        <div id="worker-status-badge" sse-swap="status" class="flex items-center space-x-2 text-xs px-3 py-1.5 rounded-full bg-slate-800/90 border border-slate-700/80 shadow-sm">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span class="text-slate-300 font-medium">Воркер: Готов</span>
+        <div class="header-actions">
+          <div id="worker-status-badge" sse-swap="status" class="status">
+            <span class="dot"></span><span>Подключение…</span>
+          </div>
+          <button
+            hx-post="/api/worker/run"
+            hx-swap="none"
+            hx-disabled-elt="this"
+            class="button primary btn-action"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <path d="m13 3-9 11h7l-1 7 10-12h-7z" /></svg
+            >Запустить сбор
+          </button>
         </div>
-
-        <button hx-post="/api/worker/run" 
-                hx-swap="none"
-                class="btn-action inline-flex items-center space-x-1.5 px-3.5 py-1.5 border border-emerald-500/40 text-xs font-semibold rounded-lg text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95 transition-all cursor-pointer shadow-sm">
-          <span>⚡</span>
-          <span>Запустить сбор</span>
-        </button>
       </div>
-    </div>
-  </header>
-
-  <!-- Основной контент -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    {{block "content" .}}{{end}}
-  </main>
-
-  <footer class="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
-    <p>Metacrawler &copy; 2026. Парсер и аналитическая платформа игр с поддержкой OpenAI и эмбеддингов.</p>
-  </footer>
-
-  <!-- Toast Notification Container -->
-  <div id="toast-container" class="fixed bottom-5 right-5 z-50 pointer-events-none transition-all duration-300"></div>
-
-  <script>
-    function showToast(message, isError) {
-      const container = document.getElementById('toast-container');
-      if (!container) return;
-      const toast = document.createElement('div');
-      toast.className = `pointer-events-auto flex items-center space-x-2 px-4 py-3 rounded-xl shadow-2xl text-xs font-semibold transform transition-all duration-300 translate-y-2 opacity-0 ${isError ? 'bg-rose-950 border border-rose-500/50 text-rose-200' : 'bg-slate-900 border border-emerald-500/50 text-emerald-200'}`;
-      toast.innerHTML = `<span>${isError ? '❌' : '🚀'}</span><span>${message}</span>`;
-      container.appendChild(toast);
-      requestAnimationFrame(() => {
-        toast.classList.remove('translate-y-2', 'opacity-0');
+    </header>
+    <main id="main" class="shell main">{{block "content" .}}{{end}}</main>
+    <footer class="footer">
+      <div class="shell">
+        <span
+          ><strong>metacrawler.</strong> &nbsp; Игры. Оценки. Впечатления.</span
+        ><span>Данные Metacritic · Анализ отзывов с помощью ИИ</span>
+      </div>
+    </footer>
+    <div id="toast-container" role="status" aria-live="polite"></div>
+    <script>
+      document.querySelectorAll(".nav a").forEach((a) => {
+        if (
+          a.pathname ===
+          (location.pathname.startsWith("/monitoring") ? "/monitoring" : "/")
+        )
+          a.setAttribute("aria-current", "page");
       });
-      setTimeout(() => {
-        toast.classList.add('opacity-0', 'translate-y-2');
-        setTimeout(() => toast.remove(), 300);
-      }, 3500);
-    }
-
-    document.body.addEventListener('htmx:afterRequest', function(evt) {
-      const url = evt.detail.requestConfig?.path || '';
-      if (url.startsWith('/api/worker/run')) {
-        if (evt.detail.successful) {
-          showToast('Команда воркеру успешно отправлена');
-        } else {
-          showToast('Ошибка отправки команды воркеру', true);
-        }
+      function showToast(message, isError) {
+        const toast = document.createElement("div");
+        toast.className = "toast" + (isError ? " error" : "");
+        toast.textContent = message;
+        document.getElementById("toast-container").appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
       }
-    });
-
-    document.body.addEventListener('htmx:sseMessage', function(evt) {
-      const logs = document.getElementById('worker-logs');
-      if (logs) {
-        logs.scrollTop = logs.scrollHeight;
-      }
-    });
-  </script>
-</body>
+      document.body.addEventListener("htmx:afterRequest", (evt) => {
+        const path = evt.detail.requestConfig?.path || "";
+        if (path.startsWith("/api/worker/run"))
+          showToast(
+            evt.detail.successful
+              ? "Запрос на сбор отправлен. Ход обработки — в мониторинге."
+              : "Не удалось запустить сбор. Попробуйте ещё раз.",
+            !evt.detail.successful,
+          );
+        if (path.startsWith("/api/games") && !evt.detail.successful)
+          showToast("Не удалось обновить каталог. Попробуйте ещё раз.", true);
+        if (evt.detail.target?.id === "games-list")
+          evt.detail.target.setAttribute("aria-busy", "false");
+      });
+      document.body.addEventListener("htmx:beforeRequest", (evt) => {
+        if (evt.detail.target?.id === "games-list")
+          evt.detail.target.setAttribute("aria-busy", "true");
+      });
+      document.body.addEventListener("htmx:sseMessage", () => {
+        const logs = document.getElementById("worker-logs");
+        if (logs && document.getElementById("autoscroll")?.checked)
+          logs.scrollTop = logs.scrollHeight;
+        const state = document.getElementById("connection-state");
+        if (state) state.textContent = "● Обновляется в реальном времени";
+      });
+      document.body.addEventListener("htmx:sseError", () => {
+        const state = document.getElementById("connection-state");
+        if (state)
+          state.textContent = "Переподключение… данные могут быть устаревшими";
+        document.getElementById("worker-status-badge").textContent =
+          "Переподключение…";
+      });
+      document.body.addEventListener(
+        "error",
+        (evt) => {
+          if (evt.target.tagName === "IMG") evt.target.hidden = true;
+        },
+        true,
+      );
+    </script>
+  </body>
 </html>

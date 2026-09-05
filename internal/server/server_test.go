@@ -104,6 +104,7 @@ func TestGameListPartial_FiltersResults(t *testing.T) {
 	seedTestData(t, db)
 
 	req := httptest.NewRequest("GET", "/api/games?search=Dark", nil)
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 
 	srv.Router().ServeHTTP(rec, req)
@@ -111,6 +112,7 @@ func TestGameListPartial_FiltersResults(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "Dark Souls III")
 	require.NotContains(t, rec.Body.String(), "Elden Ring")
+	require.Equal(t, "/?search=Dark", rec.Header().Get("HX-Replace-Url"))
 }
 
 func TestGameDetailHandler_ReturnsDetailsAndSimilar(t *testing.T) {
@@ -141,7 +143,7 @@ func TestMonitoringHandler_Returns200(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "Мониторинг сервиса")
-	require.Contains(t, rec.Body.String(), "Принудительный запуск")
+	require.Contains(t, rec.Body.String(), "Запустить сбор")
 }
 
 func TestWorkerRunEndpoint_ForcedModes(t *testing.T) {

@@ -1,70 +1,53 @@
 {{define "title"}}Каталог игр — Metacrawler{{end}}
-
 {{define "content"}}
-<div class="space-y-6">
-  <!-- Заголовок и фильтры -->
-  <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-800/80 shadow-xl space-y-4">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold text-white tracking-tight">Каталог игр</h1>
-        <p class="text-sm text-slate-400">Сбор свежих релизов и глубокий анализ отзывов Metacritic</p>
-      </div>
-      <div class="text-xs text-slate-400">
-        Страница обхода каталога: <span class="font-mono text-emerald-400 font-semibold">{{.CurrentPage}}</span>
-      </div>
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ваш следующий игровой опыт</div>
+    <h1>Хорошие игры.<br><span style="color:var(--accent)">Осознанный выбор.</span></h1>
+    <p class="intro">Свежие релизы, оценки критиков и мнения игроков.<br>Всё, что нужно, чтобы найти игру, которая увлечёт.</p>
+  </div>
+  <a href="/monitoring" class="hero-note">
+    Сбор каталога<strong>Страница {{.CurrentPage}}</strong>Перейти к мониторингу &nearr;
+  </a>
+</section>
+<form class="filters" action="/" method="get"
+      hx-get="/api/games"
+      hx-trigger="submit, change from:select, input changed delay:350ms from:input[name='search']"
+      hx-target="#games-list" hx-sync="this:replace"
+      hx-indicator="#catalog-loading, #games-list">
+  <label class="field">
+    <span>Найти игру</span>
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>
+      </svg>
+      <input class="control" type="search" name="search"
+             placeholder="Название вашей следующей игры…"
+             value="{{.Filter.Search}}" autocomplete="off">
     </div>
-
-    <!-- Форма поиска и фильтрации -->
-    <form class="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-3 pt-2"
-          hx-get="/api/games"
-          hx-trigger="change, keyup delay:300ms from:input[name='search']"
-          hx-target="#games-list">
-      
-      <!-- Поиск по названию -->
-      <div class="sm:col-span-2 relative">
-        <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-          </svg>
-        </div>
-        <input type="text" 
-               name="search" 
-               placeholder="Поиск по названию игры..." 
-               value="{{.Filter.Search}}"
-               class="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all shadow-sm">
-      </div>
-
-      <!-- Фильтр по платформам -->
-      <div class="relative">
-        <select name="platform" class="w-full appearance-none bg-slate-800/90 border border-slate-700/80 rounded-xl pl-4 pr-10 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all cursor-pointer shadow-sm">
-          <option value="">Все платформы</option>
-          {{range .Platforms}}
-            <option value="{{.}}" {{if eq $.Filter.Platform .}}selected{{end}}>{{.}}</option>
-          {{end}}
-        </select>
-        <svg class="w-4 h-4 text-slate-400 pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-        </svg>
-      </div>
-
-      <!-- Сортировка -->
-      <div class="relative">
-        <select name="sort" class="w-full appearance-none bg-slate-800/90 border border-slate-700/80 rounded-xl pl-4 pr-10 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition-all cursor-pointer shadow-sm">
-          <option value="newest" {{if eq .Filter.Sort "newest"}}selected{{end}}>Сначала новые</option>
-          <option value="metascore_desc" {{if eq .Filter.Sort "metascore_desc"}}selected{{end}}>По рейтингу Metascore (↓)</option>
-          <option value="userscore_desc" {{if eq .Filter.Sort "userscore_desc"}}selected{{end}}>По оценке игроков (↓)</option>
-          <option value="title_asc" {{if eq .Filter.Sort "title_asc"}}selected{{end}}>По названию (А-Я)</option>
-        </select>
-        <svg class="w-4 h-4 text-slate-400 pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-        </svg>
-      </div>
-    </form>
-  </div>
-
-  <!-- Список игр -->
-  <div id="games-list">
-    {{template "games_list" .}}
-  </div>
+  </label>
+  <label class="field">
+    <span>Платформа</span>
+    <select class="control" name="platform">
+      <option value="">Все платформы</option>
+      {{range .Platforms}}
+      <option value="{{.}}" {{if eq $.Filter.Platform .}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </label>
+  <label class="field">
+    <span>Сортировать</span>
+    <select class="control" name="sort">
+      <option value="newest" {{if eq .Filter.Sort "newest"}}selected{{end}}>Сначала новые</option>
+      <option value="metascore_desc" {{if eq .Filter.Sort "metascore_desc"}}selected{{end}}>Лучшие по Metascore</option>
+      <option value="userscore_desc" {{if eq .Filter.Sort "userscore_desc"}}selected{{end}}>Лучшие по мнению игроков</option>
+      <option value="title_asc" {{if eq .Filter.Sort "title_asc"}}selected{{end}}>По названию: А–Я</option>
+    </select>
+  </label>
+  <button type="submit" class="button">Найти</button>
+</form>
+<div id="catalog-loading" class="loading" role="status">Обновляем каталог…</div>
+<div id="games-list" class="results" aria-live="polite" aria-busy="false">
+  {{template "games_list" .}}
 </div>
 {{end}}
