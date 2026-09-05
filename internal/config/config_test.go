@@ -10,7 +10,7 @@ import (
 
 func TestLoadConfig_Defaults(t *testing.T) {
 	cfg := config.Load()
-	require.Equal(t, "8080", cfg.Port)
+	require.Equal(t, "8079", cfg.Port)
 	require.Equal(t, "data/metacrawler.db", cfg.DBPath)
 	require.Equal(t, 2000, cfg.CrawlDelayMinMs)
 	require.Equal(t, 4000, cfg.CrawlDelayMaxMs)

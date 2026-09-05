@@ -23,7 +23,7 @@ func Load() *Config {
 	loadDotEnv(".env")
 
 	return &Config{
-		Port:            getEnv("PORT", "8080"),
+		Port:            getEnv("PORT", "8079"),
 		DBPath:          getEnv("DB_PATH", "data/metacrawler.db"),
 		CronSchedule:    getEnv("CRON_SCHEDULE", "0 * * * *"),
 		CrawlDelayMinMs: getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),

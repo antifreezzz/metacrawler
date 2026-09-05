@@ -32,7 +32,7 @@ func setupServer(t *testing.T) (*server.Server, *storage.DB) {
 	db, err := storage.New(":memory:")
 	require.NoError(t, err)
 
-	cfg := &config.Config{Port: "8080"}
+	cfg := &config.Config{Port: "8079"}
 	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
 	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
 

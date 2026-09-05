@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,15 +24,30 @@ type DB struct {
 }
 
 func New(dsn string) (*DB, error) {
+	if dsn != ":memory:" && !strings.HasPrefix(dsn, "file::memory:") {
+		dir := filepath.Dir(dsn)
+		if dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0777); err != nil {
+				return nil, fmt.Errorf("create db directory %s: %w", dir, err)
+			}
+		}
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
-	// PRAGMA настройки
+	// Ограничиваем пул 1 соединением для устранения конкуренции за писателя в SQLite
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	// PRAGMA настройки: WAL режим, таймаут ожидания блокировки 5с, нормальная синхронизация
 	if _, err := db.Exec(`
+		PRAGMA busy_timeout = 5000;
 		PRAGMA foreign_keys = ON;
 		PRAGMA journal_mode = WAL;
+		PRAGMA synchronous = NORMAL;
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply sqlite pragmas: %w", err)

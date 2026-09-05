@@ -58,7 +58,7 @@ cp .env.example .env
 
 Параметры:
 ```ini
-PORT=8080
+PORT=8079
 DB_PATH=data/metacrawler.db
 CRON_SCHEDULE=0 * * * *
 CRAWL_DELAY_MIN_MS=2000
@@ -89,7 +89,7 @@ go test -v ./...
 ```bash
 make run
 ```
-Сервис доступен по адресу: `http://localhost:8080`.
+Сервис доступен по адресу: `http://localhost:8079`.
 
 ---
 
