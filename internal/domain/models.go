@@ -15,6 +15,14 @@ const (
 	ReviewTypeUser   ReviewType = "user"
 )
 
+// TimezoneUTC3 представляет фиксированный часовой пояс UTC+3 (Москва / MSK).
+var TimezoneUTC3 = time.FixedZone("UTC+3", 3*60*60)
+
+// Now возвращает текущее время в поясе UTC+3.
+func Now() time.Time {
+	return time.Now().In(TimezoneUTC3)
+}
+
 // Game представляет базовую сущность игры.
 type Game struct {
 	ID          string         `json:"id"`

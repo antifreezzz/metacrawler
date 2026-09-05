@@ -25,6 +25,9 @@ type ScraperClient interface {
 type LLMClient interface {
 	SummarizeReviews(ctx context.Context, title, platform string, critics, users []domain.Review) (*llm.SummaryResult, error)
 	GetEmbedding(ctx context.Context, text string) ([]float32, error)
+	HasAPIKey() bool
+	ChatModel() string
+	EmbeddingModel() string
 }
 
 type YouTubeClient interface {
@@ -88,16 +91,16 @@ func NewManager(db *storage.DB, scraper ScraperClient, llmClient LLMClient, ytCl
 }
 
 func (m *Manager) addLog(msg string) {
-	timeStr := time.Now().Format("15:04:05")
+	timeStr := domain.Now().Format("15:04:05")
 	entry := fmt.Sprintf("[%s] %s", timeStr, msg)
 	m.logs = append(m.logs, entry)
-	if len(m.logs) > 40 {
-		m.logs = m.logs[len(m.logs)-40:]
+	if len(m.logs) > 300 {
+		m.logs = m.logs[len(m.logs)-300:]
 	}
 }
 
 func (m *Manager) StartCron() error {
-	m.cron = cron.New()
+	m.cron = cron.New(cron.WithLocation(domain.TimezoneUTC3))
 	schedule := m.cfg.CronSchedule
 	if schedule == "" {
 		schedule = "0 * * * *"
@@ -200,17 +203,17 @@ func (m *Manager) setProgress(current int, task string) {
 
 func (m *Manager) setFinished(processed int, err error) {
 	m.mu.Lock()
-	m.lastRunAt = time.Now().UTC()
+	m.lastRunAt = domain.Now()
 	m.processedCount = processed
 	if err != nil {
 		m.status = "Error"
 		m.lastError = err.Error()
 		m.currentTask = fmt.Sprintf("Error: %v", err)
-		m.addLog(fmt.Sprintf("Ошибка выполнения: %v", err))
+		m.addLog(fmt.Sprintf("❌ Ошибка выполнения: %v", err))
 	} else {
 		m.status = "Idle"
 		m.currentTask = fmt.Sprintf("Finished. Processed %d games.", processed)
-		m.addLog(fmt.Sprintf("Цикл завершен. Обработано игр: %d.", processed))
+		m.addLog(fmt.Sprintf("🏁 Цикл завершён (UTC+3). Успешно обработано игр: %d.", processed))
 	}
 	m.mu.Unlock()
 	m.notifySubscribers()
@@ -229,7 +232,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	}
 	m.mu.Unlock()
 
-	today := time.Now().UTC().Format("2006-01-02")
+	today := domain.Now().Format("2006-01-02")
 	lastCrawlDate, _ := m.db.GetState(ctx, "last_crawl_date")
 
 	var candidateSlugs []string
@@ -244,11 +247,13 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 
 	if useNewReleases {
 		m.setRunning("Запрос свежих релизов (New Releases)", 0)
+		m.addLog("🚀 [Start] Режим: New Releases (свежие релизы Metacritic)")
 		candidateSlugs, err = m.scraper.FetchNewReleases(ctx)
 		if err != nil {
 			m.setFinished(0, fmt.Errorf("fetch new releases: %w", err))
 			return 0, err
 		}
+		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр из раздела New Releases: %d", len(candidateSlugs)))
 		_ = m.db.SetState(ctx, "last_crawl_date", today)
 		_ = m.db.SetState(ctx, "current_page", "1")
 	} else {
@@ -263,11 +268,13 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 		}
 
 		m.setRunning(fmt.Sprintf("Запрос каталога (Страница %d)", targetPage), 0)
+		m.addLog(fmt.Sprintf("📄 [Start] Режим: Каталог (Страница %d)", targetPage))
 		candidateSlugs, err = m.scraper.FetchBrowsePage(ctx, targetPage)
 		if err != nil {
 			m.setFinished(0, fmt.Errorf("fetch browse page %d: %w", targetPage, err))
 			return 0, err
 		}
+		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр со страницы %d: %d", targetPage, len(candidateSlugs)))
 		// Переход к следующей странице
 		_ = m.db.SetState(ctx, "current_page", strconv.Itoa(targetPage+1))
 	}
@@ -279,6 +286,15 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 		if checkErr == nil && !processedToday {
 			toProcess = append(toProcess, slug)
 		}
+	}
+
+	skipped := len(candidateSlugs) - len(toProcess)
+	m.addLog(fmt.Sprintf("🧹 [Filter] Дата проверки (UTC+3): %s | Новых для сбора: %d (пропущено ранее собранных: %d)", today, len(toProcess), skipped))
+
+	if len(toProcess) == 0 {
+		m.addLog("ℹ️ [Info] Все игры из этого списка уже собраны за сегодняшнюю дату. Переход в режим ожидания.")
+		m.setFinished(0, nil)
+		return 0, nil
 	}
 
 	m.setRunning(fmt.Sprintf("Processing %d games", len(toProcess)), len(toProcess))
@@ -294,20 +310,35 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 		m.applyCooldown(ctx)
 
 		m.setProgress(idx+1, fmt.Sprintf("Scraping game: %s (%d/%d)", slug, idx+1, len(toProcess)))
+		m.addLog(fmt.Sprintf("🎮 [%d/%d] Обработка игры: %s", idx+1, len(toProcess), slug))
 
 		game, reviews, scrapeErr := m.scraper.FetchGameDetails(ctx, slug)
 		if scrapeErr != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [Scraper] Ошибка сбора деталей карточки %s: %v (пропуск)", slug, scrapeErr))
 			continue // пропускаем битую карточку, продолжаем батч
 		}
 
+		criticCount := 0
+		userCount := 0
+		for _, r := range reviews {
+			if r.ReviewType == domain.ReviewTypeCritic {
+				criticCount++
+			} else {
+				userCount++
+			}
+		}
+		m.addLog(fmt.Sprintf("  ✅ [Scraper] \"%s\" загружена | Платформ: %d, Отзывов: %d (критики: %d, игроки: %d)", game.Title, len(game.Platforms), len(reviews), criticCount, userCount))
+
 		// 1. Сохранение игры и её платформ
 		if err := m.db.UpsertGame(ctx, game); err != nil {
+			m.addLog(fmt.Sprintf("  ❌ [DB] Ошибка сохранения игры %s: %v", slug, err))
 			continue
 		}
 
 		// Получаем сохраненную игру для актуальных platform IDs
 		savedGame, err := m.db.GetGameBySlug(ctx, slug)
 		if err != nil || savedGame == nil {
+			m.addLog(fmt.Sprintf("  ❌ [DB] Ошибка получения сохраненной игры %s: %v", slug, err))
 			continue
 		}
 
@@ -318,7 +349,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 				r.GamePlatformID = p.ID
 				platReviews = append(platReviews, r)
 			}
-			_, _ = m.db.SaveReviews(ctx, platReviews)
+			savedCount, _ := m.db.SaveReviews(ctx, platReviews)
 
 			// 3. Выборка всех отзывов по платформе (включая ранее сохраненные) для саммари
 			allPlatReviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
@@ -334,7 +365,9 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			// 4. Генерация резюме отзывов LLM
 			if len(critics) > 0 || len(users) > 0 {
 				summary, llmErr := m.llm.SummarizeReviews(ctx, savedGame.Title, p.Platform, critics, users)
-				if llmErr == nil && summary != nil {
+				if llmErr != nil {
+					m.addLog(fmt.Sprintf("  ⚠️ [LLM] Ошибка генерации резюме (%s): %v", p.Platform, llmErr))
+				} else if summary != nil {
 					_ = m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
 						GamePlatformID: p.ID,
 						CriticPros:     summary.CriticPros,
@@ -342,32 +375,53 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 						UserPros:       summary.UserPros,
 						UserCons:       summary.UserCons,
 					})
+					if m.llm.HasAPIKey() {
+						m.addLog(fmt.Sprintf("  🤖 [LLM] Резюме отзывов (%s) сгенерировано через %s", p.Platform, m.llm.ChatModel()))
+					} else {
+						m.addLog(fmt.Sprintf("  💡 [LLM] Резюме отзывов (%s) сформировано (локальный фоллбэк, LLM_API_KEY не задан)", p.Platform))
+					}
 				}
+			} else {
+				m.addLog(fmt.Sprintf("  ℹ️ [Reviews] Платформа %s: сохранено отзывов: %d", p.Platform, savedCount))
 			}
 		}
 
 		// 5. Векторный эмбеддинг игры
 		textForEmbedding := fmt.Sprintf("%s. %s. Developer: %s", savedGame.Title, savedGame.Description, savedGame.Developer)
 		vec, embErr := m.llm.GetEmbedding(ctx, textForEmbedding)
-		if embErr == nil && len(vec) > 0 {
+		if embErr != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка получения вектора: %v", embErr))
+		} else if len(vec) > 0 {
 			_ = m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
 				GameID:     savedGame.ID,
 				Vector:     vec,
 				Dimensions: len(vec),
 			})
+			if m.llm.HasAPIKey() {
+				m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор получен через %s (%d dims)", m.llm.EmbeddingModel(), len(vec)))
+			} else {
+				m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор сгенерирован локально (детерминированный фоллбэк, %d dims)", len(vec)))
+			}
 		}
 
 		// 6. Дополнительная часть 1: Анализ популярного летсплея на YouTube
 		if m.youtube != nil {
-			m.setProgress(idx+1, fmt.Sprintf("Analyzing YouTube letsplay for: %s", savedGame.Title))
 			ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
-			if ytErr == nil && ytAnalysis != nil {
+			if ytErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [YouTube] Летсплей не найден или ошибка: %v", ytErr))
+			} else if ytAnalysis != nil {
 				_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
+				if m.llm.HasAPIKey() {
+					m.addLog(fmt.Sprintf("  🎬 [YouTube] Найдено видео: \"%s\" (канал: %s, %d просм.) | Резюме блоггера через LLM", ytAnalysis.VideoTitle, ytAnalysis.ChannelName, ytAnalysis.ViewCount))
+				} else {
+					m.addLog(fmt.Sprintf("  🎬 [YouTube] Найдено видео: \"%s\" (канал: %s, %d просм.) | Заключение сформировано (фоллбэк)", ytAnalysis.VideoTitle, ytAnalysis.ChannelName, ytAnalysis.ViewCount))
+				}
 			}
 		}
 
 		// 7. Помечаем игру как обработанную сегодня
 		_ = m.db.MarkProcessed(ctx, slug, today)
+		m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу на дату %s (UTC+3)", savedGame.Title, today))
 		processedCount++
 	}
 

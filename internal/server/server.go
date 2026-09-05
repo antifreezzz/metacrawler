@@ -343,7 +343,7 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 			// 2. Событие для панели метрик мониторинга (обновляет внутренности #metrics-panel)
 			lastRunStr := "Еще не запускался"
 			if !status.LastRunAt.IsZero() {
-				lastRunStr = status.LastRunAt.Format("15:04:05 (02.01)")
+				lastRunStr = status.LastRunAt.In(domain.TimezoneUTC3).Format("15:04:05 (02.01)")
 			}
 			metricsHTML := fmt.Sprintf(`<div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Статус воркера</div><div class="text-2xl font-black text-white flex items-center space-x-2"><span class="w-3 h-3 rounded-full %s"></span><span>%s</span></div><div class="text-xs text-slate-500 truncate pt-1">%s</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Обработано в батче</div><div class="text-2xl font-black text-emerald-400">%d / %d</div><div class="text-xs text-slate-500 pt-1">Успешно: %d игр</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Текущая страница каталога</div><div class="text-2xl font-black text-indigo-400">№ %s</div><div class="text-xs text-slate-500 pt-1">SEE ALL пагинация</div></div><div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1"><div class="text-xs uppercase font-bold text-slate-400">Последний запуск</div><div class="text-lg font-bold text-slate-300">%s</div><div class="text-xs text-slate-500 pt-1">Расписание: 1 раз в час</div></div>`,
 				badgeColor, status.Status, template.HTMLEscapeString(taskDesc),

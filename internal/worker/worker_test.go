@@ -3,7 +3,6 @@ package worker_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -48,6 +47,18 @@ func (m *MockLLM) GetEmbedding(ctx context.Context, text string) ([]float32, err
 	return args.Get(0).([]float32), args.Error(1)
 }
 
+func (m *MockLLM) HasAPIKey() bool {
+	return false
+}
+
+func (m *MockLLM) ChatModel() string {
+	return "gpt-4o-mini"
+}
+
+func (m *MockLLM) EmbeddingModel() string {
+	return "text-embedding-3-small"
+}
+
 func setupWorkerEnv(t *testing.T) (*storage.DB, *MockScraper, *MockLLM, *worker.Manager) {
 	db, err := storage.New(":memory:")
 	require.NoError(t, err)
@@ -86,7 +97,7 @@ func TestWorker_FirstRunOfDay_NewReleases(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
-	today := time.Now().UTC().Format("2006-01-02")
+	today := domain.Now().Format("2006-01-02")
 
 	// На New Releases 2 игры
 	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"game-1", "game-2"}, nil).Once()
@@ -126,7 +137,7 @@ func TestWorker_SubsequentRun_StrictPaginationNoDofetch(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
-	today := time.Now().UTC().Format("2006-01-02")
+	today := domain.Now().Format("2006-01-02")
 
 	// Устанавливаем, что сегодня уже был первый запуск
 	_ = db.SetState(ctx, "last_crawl_date", today)
@@ -162,7 +173,7 @@ func TestWorker_DayRolloverReset(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
-	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	yesterday := domain.Now().AddDate(0, 0, -1).Format("2006-01-02")
 
 	// Вчера были на странице 10
 	_ = db.SetState(ctx, "last_crawl_date", yesterday)

@@ -49,6 +49,24 @@ func NewClient(baseURL, apiKey, chatModel, embeddingModel string) *Client {
 	}
 }
 
+func (c *Client) HasAPIKey() bool {
+	return c != nil && c.apiKey != ""
+}
+
+func (c *Client) ChatModel() string {
+	if c == nil {
+		return ""
+	}
+	return c.chatModel
+}
+
+func (c *Client) EmbeddingModel() string {
+	if c == nil {
+		return ""
+	}
+	return c.embeddingModel
+}
+
 // SummarizeReviews отправляет отзывы критиков и игроков в LLM для формирования раздельного резюме плюсов и минусов.
 func (c *Client) SummarizeReviews(ctx context.Context, gameTitle, platform string, criticReviews, userReviews []domain.Review) (*SummaryResult, error) {
 	// Fallback если нет API-ключа или пустой список отзывов

@@ -295,7 +295,7 @@ func (c *Client) AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*d
 		ChannelName: videoInfo.ChannelName,
 		ViewCount:   videoInfo.ViewCount,
 		Summary:     summary,
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt:   domain.Now(),
 	}, nil
 }
 

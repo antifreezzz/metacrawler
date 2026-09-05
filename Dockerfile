@@ -35,6 +35,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV PORT=8080
 ENV DB_PATH=/app/data/metacrawler.db
+ENV TZ=Europe/Moscow
 
 EXPOSE 8080
 VOLUME ["/app/data"]
