@@ -1,0 +1,125 @@
+{{define "title"}}Мониторинг сервиса — Metacrawler{{end}}
+
+{{define "content"}}
+<div class="space-y-8" hx-ext="sse" sse-connect="/api/worker/events">
+  <!-- Заголовок страницы -->
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div>
+      <h1 class="text-3xl font-extrabold text-white tracking-tight">Мониторинг сервиса</h1>
+      <p class="text-sm text-slate-400 mt-1">Отслеживание состояния парсера, фоновых воркеров и живой журнал событий</p>
+    </div>
+    <div>
+      <a href="/" class="inline-flex items-center space-x-1 text-sm text-slate-400 hover:text-emerald-400 transition-colors">
+        <span>&larr; Вернуться в каталог</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- Карточки метрик (обновляются в реальном времени через SSE) -->
+  <div id="metrics-panel" sse-swap="metrics" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1">
+      <div class="text-xs uppercase font-bold text-slate-400">Статус воркера</div>
+      <div class="text-2xl font-black text-white flex items-center space-x-2">
+        <span class="w-3 h-3 rounded-full {{if eq .Status.Status "Running"}}bg-amber-400 animate-pulse{{else if eq .Status.Status "Error"}}bg-rose-500{{else}}bg-emerald-400{{end}}"></span>
+        <span>{{.Status.Status}}</span>
+      </div>
+      <div class="text-xs text-slate-500 truncate pt-1">{{.Status.CurrentTask}}</div>
+    </div>
+
+    <div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1">
+      <div class="text-xs uppercase font-bold text-slate-400">Обработано в батче</div>
+      <div class="text-2xl font-black text-emerald-400">
+        {{.Status.CurrentIndex}} / {{.Status.TotalInBatch}}
+      </div>
+      <div class="text-xs text-slate-500 pt-1">Успешно: {{.Status.ProcessedCount}} игр</div>
+    </div>
+
+    <div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1">
+      <div class="text-xs uppercase font-bold text-slate-400">Текущая страница каталога</div>
+      <div class="text-2xl font-black text-indigo-400">
+        № {{.Status.CurrentPage}}
+      </div>
+      <div class="text-xs text-slate-500 pt-1">SEE ALL пагинация</div>
+    </div>
+
+    <div class="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-1">
+      <div class="text-xs uppercase font-bold text-slate-400">Последний запуск</div>
+      <div class="text-lg font-bold text-slate-300">
+        {{if .Status.LastRunAt.IsZero}}Еще не запускался{{else}}{{.Status.LastRunAt.Format "15:04:05 (02.01)"}}{{end}}
+      </div>
+      <div class="text-xs text-slate-500 pt-1">Расписание: 1 раз в час</div>
+    </div>
+  </div>
+
+  <!-- Пульт принудительного запуска процессов -->
+  <div class="bg-slate-900/60 p-6 rounded-2xl border border-slate-800 space-y-4 shadow-xl">
+    <div class="border-b border-slate-800 pb-3">
+      <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+        <span>⚡</span>
+        <span>Принудительный запуск процесса обработки</span>
+      </h2>
+      <p class="text-xs text-slate-400 mt-0.5">Выберите нужный режим обработки. Воркер запустится немедленно без ожидания таймера cron.</p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+      <!-- 1. Стартовый запуск (New Releases) -->
+      <button hx-post="/api/worker/run?mode=new_releases" 
+              hx-swap="none"
+              class="p-4 rounded-xl bg-slate-800/80 hover:bg-emerald-950/40 border border-slate-700 hover:border-emerald-500/50 text-left transition-all group cursor-pointer">
+        <div class="text-sm font-bold text-white group-hover:text-emerald-400 flex items-center justify-between">
+          <span>🚀 Стартовый сбор (New Releases)</span>
+          <span>&rarr;</span>
+        </div>
+        <p class="text-xs text-slate-400 mt-1">Первые 20 игр из раздела New Releases со сбросом суточного цикла.</p>
+      </button>
+
+      <!-- 2. Следующая страница каталога -->
+      <button hx-post="/api/worker/run?mode=next_page" 
+              hx-swap="none"
+              class="p-4 rounded-xl bg-slate-800/80 hover:bg-emerald-950/40 border border-slate-700 hover:border-emerald-500/50 text-left transition-all group cursor-pointer">
+        <div class="text-sm font-bold text-white group-hover:text-emerald-400 flex items-center justify-between">
+          <span>📑 Следующая страница (See All)</span>
+          <span>&rarr;</span>
+        </div>
+        <p class="text-xs text-slate-400 mt-1">Обработать очередную страницу каталога по строгой пагинации без добора.</p>
+      </button>
+
+      <!-- 3. Произвольная страница -->
+      <form hx-post="/api/worker/run?mode=custom_page" hx-swap="none" class="p-4 rounded-xl bg-slate-800/80 border border-slate-700 flex flex-col justify-between">
+        <div>
+          <div class="text-sm font-bold text-white">🎯 Произвольная страница</div>
+          <p class="text-xs text-slate-400 mt-1">Укажите номер страницы каталога для сбора:</p>
+        </div>
+        <div class="flex items-center space-x-2 mt-3">
+          <input type="number" name="page" min="1" max="500" value="1" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white text-center focus:outline-none focus:border-emerald-500">
+          <button type="submit" class="flex-1 px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/40 text-emerald-300 font-semibold text-xs rounded-lg transition-all cursor-pointer">
+            Запустить
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Живой терминал логов -->
+  <div class="bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-3 font-mono">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div class="flex items-center space-x-2 text-xs text-slate-400">
+        <span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
+        <span class="w-2.5 h-2.5 rounded-full bg-yellow-500 inline-block"></span>
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+        <span class="font-bold text-slate-300 ml-2">Терминал событий воркера</span>
+      </div>
+      <div class="text-[11px] text-emerald-400 flex items-center space-x-1">
+        <span class="animate-pulse">●</span>
+        <span>LIVE SSE</span>
+      </div>
+    </div>
+
+    <div id="worker-logs" sse-swap="logs" class="h-64 overflow-y-auto space-y-1 text-xs text-slate-300 pr-2">
+      {{range .Status.Logs}}
+        <div class="text-slate-400"><span class="text-emerald-400">&gt;</span> {{.}}</div>
+      {{end}}
+    </div>
+  </div>
+</div>
+{{end}}

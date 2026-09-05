@@ -129,3 +129,39 @@ func TestGameDetailHandler_ReturnsDetailsAndSimilar(t *testing.T) {
 	// Должна отображаться похожая игра
 	require.Contains(t, rec.Body.String(), "Dark Souls III")
 }
+
+func TestMonitoringHandler_Returns200(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	req := httptest.NewRequest("GET", "/monitoring", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "Мониторинг сервиса")
+	require.Contains(t, rec.Body.String(), "Принудительный запуск")
+}
+
+func TestWorkerRunEndpoint_ForcedModes(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	// Запуск New Releases
+	req := httptest.NewRequest("POST", "/api/worker/run?mode=new_releases", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Contains(t, rec.Body.String(), `"status":"accepted"`)
+	require.Contains(t, rec.Body.String(), `"mode":"new_releases"`)
+
+	// Запрос статуса
+	reqStatus := httptest.NewRequest("GET", "/api/worker/status", nil)
+	recStatus := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recStatus, reqStatus)
+
+	require.Equal(t, http.StatusOK, recStatus.Code)
+	require.Contains(t, recStatus.Body.String(), `"status"`)
+}

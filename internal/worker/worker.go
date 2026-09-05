@@ -31,6 +31,15 @@ type YouTubeClient interface {
 	AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*domain.YouTubeAnalysis, error)
 }
 
+type RunMode string
+
+const (
+	RunModeAuto        RunMode = "auto"
+	RunModeNewReleases RunMode = "new_releases"
+	RunModeNextPage    RunMode = "next_page"
+	RunModeCustomPage  RunMode = "custom_page"
+)
+
 type StatusInfo struct {
 	Status         string    `json:"status"` // Idle, Running, Error
 	CurrentTask    string    `json:"current_task"`
@@ -40,6 +49,7 @@ type StatusInfo struct {
 	LastRunAt      time.Time `json:"last_run_at"`
 	LastError      string    `json:"last_error"`
 	CurrentPage    string    `json:"current_page"`
+	Logs           []string  `json:"logs"`
 }
 
 type Manager struct {
@@ -58,6 +68,7 @@ type Manager struct {
 	currentIndex   int
 	lastRunAt      time.Time
 	lastError      string
+	logs           []string
 
 	subscribers   map[chan StatusInfo]struct{}
 	subscribersMu sync.RWMutex
@@ -72,6 +83,16 @@ func NewManager(db *storage.DB, scraper ScraperClient, llmClient LLMClient, ytCl
 		cfg:         cfg,
 		status:      "Idle",
 		subscribers: make(map[chan StatusInfo]struct{}),
+		logs:        []string{"[Система] Воркер инициализирован и готов к работе."},
+	}
+}
+
+func (m *Manager) addLog(msg string) {
+	timeStr := time.Now().Format("15:04:05")
+	entry := fmt.Sprintf("[%s] %s", timeStr, msg)
+	m.logs = append(m.logs, entry)
+	if len(m.logs) > 40 {
+		m.logs = m.logs[len(m.logs)-40:]
 	}
 }
 
@@ -102,7 +123,7 @@ func (m *Manager) StopCron() {
 }
 
 func (m *Manager) Subscribe() (chan StatusInfo, func()) {
-	ch := make(chan StatusInfo, 10)
+	ch := make(chan StatusInfo, 20)
 	m.subscribersMu.Lock()
 	m.subscribers[ch] = struct{}{}
 	m.subscribersMu.Unlock()
@@ -140,6 +161,9 @@ func (m *Manager) GetStatus() StatusInfo {
 		curPage = "1"
 	}
 
+	logsCopy := make([]string, len(m.logs))
+	copy(logsCopy, m.logs)
+
 	return StatusInfo{
 		Status:         m.status,
 		CurrentTask:    m.currentTask,
@@ -149,6 +173,7 @@ func (m *Manager) GetStatus() StatusInfo {
 		LastRunAt:      m.lastRunAt,
 		LastError:      m.lastError,
 		CurrentPage:    curPage,
+		Logs:           logsCopy,
 	}
 }
 
@@ -159,6 +184,7 @@ func (m *Manager) setRunning(task string, total int) {
 	m.totalInBatch = total
 	m.currentIndex = 0
 	m.lastError = ""
+	m.addLog(task)
 	m.mu.Unlock()
 	m.notifySubscribers()
 }
@@ -167,6 +193,7 @@ func (m *Manager) setProgress(current int, task string) {
 	m.mu.Lock()
 	m.currentIndex = current
 	m.currentTask = task
+	m.addLog(task)
 	m.mu.Unlock()
 	m.notifySubscribers()
 }
@@ -179,16 +206,22 @@ func (m *Manager) setFinished(processed int, err error) {
 		m.status = "Error"
 		m.lastError = err.Error()
 		m.currentTask = fmt.Sprintf("Error: %v", err)
+		m.addLog(fmt.Sprintf("Ошибка выполнения: %v", err))
 	} else {
 		m.status = "Idle"
 		m.currentTask = fmt.Sprintf("Finished. Processed %d games.", processed)
+		m.addLog(fmt.Sprintf("Цикл завершен. Обработано игр: %d.", processed))
 	}
 	m.mu.Unlock()
 	m.notifySubscribers()
 }
 
-// ExecuteCycle выполняет один цикл сбора данных: либо New Releases (в начале дня), либо очередную страницу каталога (строго без добора).
 func (m *Manager) ExecuteCycle(ctx context.Context) (int, error) {
+	return m.ExecuteMode(ctx, RunModeAuto, 0)
+}
+
+// ExecuteMode выполняет цикл в указанном режиме (авто суточный, принудительный new_releases, следующая страница или кастомная страница).
+func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int) (int, error) {
 	m.mu.Lock()
 	if m.status == "Running" {
 		m.mu.Unlock()
@@ -197,40 +230,46 @@ func (m *Manager) ExecuteCycle(ctx context.Context) (int, error) {
 	m.mu.Unlock()
 
 	today := time.Now().UTC().Format("2006-01-02")
-	lastCrawlDate, err := m.db.GetState(ctx, "last_crawl_date")
-	if err != nil {
-		m.setFinished(0, err)
-		return 0, err
-	}
+	lastCrawlDate, _ := m.db.GetState(ctx, "last_crawl_date")
 
 	var candidateSlugs []string
-	isFirstRunToday := lastCrawlDate != today
+	var err error
 
-	if isFirstRunToday {
-		m.setRunning("Fetching New Releases", 0)
+	useNewReleases := false
+	if mode == RunModeNewReleases {
+		useNewReleases = true
+	} else if mode == RunModeAuto && lastCrawlDate != today {
+		useNewReleases = true
+	}
+
+	if useNewReleases {
+		m.setRunning("Запрос свежих релизов (New Releases)", 0)
 		candidateSlugs, err = m.scraper.FetchNewReleases(ctx)
 		if err != nil {
 			m.setFinished(0, fmt.Errorf("fetch new releases: %w", err))
 			return 0, err
 		}
-		// Запоминаем, что сегодня New Releases обработаны, и для последующих запусков страница = 1
 		_ = m.db.SetState(ctx, "last_crawl_date", today)
 		_ = m.db.SetState(ctx, "current_page", "1")
 	} else {
-		curPageStr, _ := m.db.GetState(ctx, "current_page")
-		curPage := 1
-		if p, err := strconv.Atoi(curPageStr); err == nil && p >= 1 {
-			curPage = p
+		targetPage := 1
+		if mode == RunModeCustomPage && customPage > 0 {
+			targetPage = customPage
+		} else {
+			curPageStr, _ := m.db.GetState(ctx, "current_page")
+			if p, err := strconv.Atoi(curPageStr); err == nil && p >= 1 {
+				targetPage = p
+			}
 		}
 
-		m.setRunning(fmt.Sprintf("Fetching Browse Catalog (Page %d)", curPage), 0)
-		candidateSlugs, err = m.scraper.FetchBrowsePage(ctx, curPage)
+		m.setRunning(fmt.Sprintf("Запрос каталога (Страница %d)", targetPage), 0)
+		candidateSlugs, err = m.scraper.FetchBrowsePage(ctx, targetPage)
 		if err != nil {
-			m.setFinished(0, fmt.Errorf("fetch browse page %d: %w", curPage, err))
+			m.setFinished(0, fmt.Errorf("fetch browse page %d: %w", targetPage, err))
 			return 0, err
 		}
-		// Переходим к следующей странице на следующий запуск
-		_ = m.db.SetState(ctx, "current_page", strconv.Itoa(curPage+1))
+		// Переход к следующей странице
+		_ = m.db.SetState(ctx, "current_page", strconv.Itoa(targetPage+1))
 	}
 
 	// Отбираем только игры, которые сегодня ЕЩЕ НЕ обрабатывались (СТРОГО БЕЗ ДОБОРА со следующих страниц)

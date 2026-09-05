@@ -19,11 +19,18 @@
   <!-- Навигация и панель статуса -->
   <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <div class="flex items-center space-x-3">
+      <div class="flex items-center space-x-6">
         <a href="/" class="flex items-center space-x-2 text-xl font-black tracking-tight text-white hover:text-emerald-400 transition-colors">
           <span class="text-2xl">🎮</span>
           <span>META<span class="text-emerald-400">CRAWLER</span></span>
         </a>
+
+        <nav class="hidden sm:flex items-center space-x-4 text-xs font-semibold text-slate-300">
+          <a href="/" class="hover:text-emerald-400 transition-colors">Каталог</a>
+          <a href="/monitoring" class="hover:text-emerald-400 transition-colors flex items-center space-x-1">
+            <span>📊 Мониторинг & Запуск</span>
+          </a>
+        </nav>
       </div>
 
       <!-- Виджет статуса воркера с live SSE -->

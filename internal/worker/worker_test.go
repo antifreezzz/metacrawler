@@ -187,3 +187,35 @@ func TestWorker_DayRolloverReset(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1", page)
 }
+
+func TestWorker_ForcedModes(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 1. Принудительный запуск кастомной страницы 5
+	scraperMock.On("FetchBrowsePage", mock.Anything, 5).Return([]string{"game-on-page-5"}, nil).Once()
+	g5, r5 := sampleGame("game-on-page-5")
+	scraperMock.On("FetchGameDetails", mock.Anything, "game-on-page-5").Return(g5, r5, nil).Once()
+
+	llmSummary := &llm.SummaryResult{}
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(llmSummary, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1, 0.2}, nil).Once()
+
+	processed, err := mgr.ExecuteMode(ctx, worker.RunModeCustomPage, 5)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+
+	// 2. Принудительный запуск New Releases
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"forced-new-rel"}, nil).Once()
+	gN, rN := sampleGame("forced-new-rel")
+	scraperMock.On("FetchGameDetails", mock.Anything, "forced-new-rel").Return(gN, rN, nil).Once()
+
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(llmSummary, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1, 0.2}, nil).Once()
+
+	processed, err = mgr.ExecuteMode(ctx, worker.RunModeNewReleases, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+}
