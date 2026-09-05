@@ -78,3 +78,16 @@ type GameEmbedding struct {
 	Vector     []float32 `json:"vector"`
 	Dimensions int       `json:"dimensions"`
 }
+
+// YouTubeAnalysis хранит данные найденного летсплея и саммари рассказа блоггера.
+type YouTubeAnalysis struct {
+	ID          int64     `json:"id"`
+	GameID      string    `json:"game_id"`
+	VideoID     string    `json:"video_id"`
+	VideoTitle  string    `json:"video_title"`
+	VideoURL    string    `json:"video_url"`
+	ChannelName string    `json:"channel_name"`
+	ViewCount   int64     `json:"view_count"`
+	Summary     string    `json:"summary"`
+	CreatedAt   time.Time `json:"created_at"`
+}

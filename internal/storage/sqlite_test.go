@@ -282,3 +282,36 @@ func TestListGames_FilterSearchSort(t *testing.T) {
 	require.Len(t, games, 2)
 	require.Equal(t, "Elden Ring", games[0].Title) // 95 идет первым
 }
+
+func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		ID:    "g-yt-1",
+		Slug:  "elden-ring",
+		Title: "Elden Ring",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	analysis := &domain.YouTubeAnalysis{
+		GameID:      game.ID,
+		VideoID:     "abc123xyz",
+		VideoTitle:  "Elden Ring Full Walkthrough Part 1",
+		VideoURL:    "https://www.youtube.com/watch?v=abc123xyz",
+		ChannelName: "ProGamer",
+		ViewCount:   1500000,
+		Summary:     "Блоггер в восторге от масштаба мира и свободы исследования, однако отмечает высокую сложность начальных боссов.",
+	}
+
+	err := db.UpsertYouTubeAnalysis(ctx, analysis)
+	require.NoError(t, err)
+
+	fetched, err := db.GetYouTubeAnalysis(ctx, game.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.Equal(t, "abc123xyz", fetched.VideoID)
+	require.Equal(t, "ProGamer", fetched.ChannelName)
+	require.Equal(t, int64(1500000), fetched.ViewCount)
+	require.Contains(t, fetched.Summary, "Блоггер в восторге")
+}

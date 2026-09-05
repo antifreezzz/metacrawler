@@ -60,7 +60,7 @@ func setupWorkerEnv(t *testing.T) (*storage.DB, *MockScraper, *MockLLM, *worker.
 	scraperMock := new(MockScraper)
 	llmMock := new(MockLLM)
 
-	mgr := worker.NewManager(db, scraperMock, llmMock, cfg)
+	mgr := worker.NewManager(db, scraperMock, llmMock, nil, cfg)
 	return db, scraperMock, llmMock, mgr
 }
 

@@ -181,6 +181,7 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 type DetailPageData struct {
 	Game         *domain.Game
 	SimilarGames []domain.Game
+	YouTube      *domain.YouTubeAnalysis
 }
 
 func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +208,9 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Подтягиваем YouTube анализ летсплея
+	ytAnalysis, _ := s.db.GetYouTubeAnalysis(ctx, game.ID)
+
 	// Подбор похожих игр на основе эмбеддингов
 	var similarGames []domain.Game
 	allEmbeddings, _ := s.db.GetAllEmbeddings(ctx)
@@ -231,6 +235,7 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 	data := DetailPageData{
 		Game:         game,
 		SimilarGames: similarGames,
+		YouTube:      ytAnalysis,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

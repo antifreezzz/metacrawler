@@ -16,6 +16,7 @@ import (
 	"metacrawler/internal/storage"
 	"metacrawler/internal/worker"
 	"metacrawler/internal/server"
+	"metacrawler/internal/youtube"
 )
 
 func main() {
@@ -39,7 +40,9 @@ func main() {
 
 	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.EmbeddingModel)
 
-	workerMgr := worker.NewManager(db, scraperClient, llmClient, cfg)
+	ytClient := youtube.NewClient(llmClient)
+
+	workerMgr := worker.NewManager(db, scraperClient, llmClient, ytClient, cfg)
 
 	// Запуск фонового планировщика (1 раз в час)
 	if err := workerMgr.StartCron(); err != nil {

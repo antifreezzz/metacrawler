@@ -117,6 +117,19 @@ func (d *DB) migrate() error {
 		dimensions INTEGER NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS youtube_analyses (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+		video_id TEXT NOT NULL,
+		video_title TEXT NOT NULL,
+		video_url TEXT NOT NULL,
+		channel_name TEXT NOT NULL DEFAULT '',
+		view_count INTEGER NOT NULL DEFAULT 0,
+		summary TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		UNIQUE(game_id)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_games_slug ON games(slug);
 	CREATE INDEX IF NOT EXISTS idx_crawl_history_lookup ON crawl_history(slug, date_str);
 	CREATE INDEX IF NOT EXISTS idx_game_platforms_game_id ON game_platforms(game_id);
@@ -535,6 +548,44 @@ func (d *DB) GetAllEmbeddings(ctx context.Context) ([]domain.GameEmbedding, erro
 		list = append(list, emb)
 	}
 	return list, rows.Err()
+}
+
+func (d *DB) UpsertYouTubeAnalysis(ctx context.Context, y *domain.YouTubeAnalysis) error {
+	y.CreatedAt = time.Now().UTC()
+	query := `
+	INSERT INTO youtube_analyses (game_id, video_id, video_title, video_url, channel_name, view_count, summary, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(game_id) DO UPDATE SET
+		video_id = excluded.video_id,
+		video_title = excluded.video_title,
+		video_url = excluded.video_url,
+		channel_name = excluded.channel_name,
+		view_count = excluded.view_count,
+		summary = excluded.summary,
+		created_at = excluded.created_at
+	RETURNING id;
+	`
+	return d.db.QueryRowContext(ctx, query,
+		y.GameID, y.VideoID, y.VideoTitle, y.VideoURL, y.ChannelName, y.ViewCount, y.Summary, y.CreatedAt,
+	).Scan(&y.ID)
+}
+
+func (d *DB) GetYouTubeAnalysis(ctx context.Context, gameID string) (*domain.YouTubeAnalysis, error) {
+	query := `
+	SELECT id, game_id, video_id, video_title, video_url, channel_name, view_count, summary, created_at
+	FROM youtube_analyses WHERE game_id = ?;
+	`
+	var y domain.YouTubeAnalysis
+	err := d.db.QueryRowContext(ctx, query, gameID).Scan(
+		&y.ID, &y.GameID, &y.VideoID, &y.VideoTitle, &y.VideoURL, &y.ChannelName, &y.ViewCount, &y.Summary, &y.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &y, nil
 }
 
 func encodeVector(vec []float32) []byte {

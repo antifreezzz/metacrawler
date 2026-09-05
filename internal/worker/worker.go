@@ -27,6 +27,10 @@ type LLMClient interface {
 	GetEmbedding(ctx context.Context, text string) ([]float32, error)
 }
 
+type YouTubeClient interface {
+	AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*domain.YouTubeAnalysis, error)
+}
+
 type StatusInfo struct {
 	Status         string    `json:"status"` // Idle, Running, Error
 	CurrentTask    string    `json:"current_task"`
@@ -42,6 +46,7 @@ type Manager struct {
 	db      *storage.DB
 	scraper ScraperClient
 	llm     LLMClient
+	youtube YouTubeClient
 	cfg     *config.Config
 	cron    *cron.Cron
 
@@ -58,11 +63,12 @@ type Manager struct {
 	subscribersMu sync.RWMutex
 }
 
-func NewManager(db *storage.DB, scraper ScraperClient, llmClient LLMClient, cfg *config.Config) *Manager {
+func NewManager(db *storage.DB, scraper ScraperClient, llmClient LLMClient, ytClient YouTubeClient, cfg *config.Config) *Manager {
 	return &Manager{
 		db:          db,
 		scraper:     scraper,
 		llm:         llmClient,
+		youtube:     ytClient,
 		cfg:         cfg,
 		status:      "Idle",
 		subscribers: make(map[chan StatusInfo]struct{}),
@@ -312,7 +318,16 @@ func (m *Manager) ExecuteCycle(ctx context.Context) (int, error) {
 			})
 		}
 
-		// 6. Помечаем игру как обработанную сегодня
+		// 6. Дополнительная часть 1: Анализ популярного летсплея на YouTube
+		if m.youtube != nil {
+			m.setProgress(idx+1, fmt.Sprintf("Analyzing YouTube letsplay for: %s", savedGame.Title))
+			ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
+			if ytErr == nil && ytAnalysis != nil {
+				_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
+			}
+		}
+
+		// 7. Помечаем игру как обработанную сегодня
 		_ = m.db.MarkProcessed(ctx, slug, today)
 		processedCount++
 	}

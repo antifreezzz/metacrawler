@@ -34,7 +34,7 @@ func setupServer(t *testing.T) (*server.Server, *storage.DB) {
 
 	cfg := &config.Config{Port: "8080"}
 	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
-	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, cfg)
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
 
 	srv := server.New(db, mgr, llmClient, cfg)
 	return srv, db
