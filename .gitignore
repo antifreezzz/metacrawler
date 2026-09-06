@@ -21,3 +21,8 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# Local deployment scripts
+deploy.sh
+*.local
+deploy.local.*

@@ -20,5 +20,13 @@ docker-build:
 docker-up:
 	docker compose up -d
 
+deploy:
+	@if [ -f ./deploy.sh ]; then \
+		./deploy.sh; \
+	else \
+		echo "Error: deploy.sh not found. Create it from deploy.example.sh"; \
+		exit 1; \
+	fi
+
 clean:
 	rm -f server
