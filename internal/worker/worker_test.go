@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -258,5 +259,47 @@ func TestWorker_RecrawlGame(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	require.Equal(t, "Awesome graphics", summary.CriticPros)
+}
+
+func TestWorker_RecrawlGameAsync(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	g, revs := sampleGame("async-target")
+	startedCh := make(chan struct{})
+	continueCh := make(chan struct{})
+
+	scraperMock.On("FetchGameDetails", mock.Anything, "async-target").Run(func(args mock.Arguments) {
+		close(startedCh)
+		<-continueCh
+	}).Return(g, revs, nil).Once()
+
+	llmSummary := &llm.SummaryResult{
+		CriticPros: "Great",
+	}
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(llmSummary, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.5, 0.5}, nil).Maybe()
+
+	// 1. Первый запуск должен успешно стартовать
+	started, err := mgr.RecrawlGameAsync("async-target")
+	require.NoError(t, err)
+	require.True(t, started)
+
+	// Ждем, пока горутина начнет выполнение
+	<-startedCh
+
+	// 2. Повторный запуск для того же slug должен вернуть false (already active)
+	started2, err2 := mgr.RecrawlGameAsync("async-target")
+	require.NoError(t, err2)
+	require.False(t, started2)
+	require.True(t, mgr.IsRecrawling("async-target"))
+
+	// Разрешаем завершиться
+	close(continueCh)
+
+	// Ждем пока освободится
+	require.Eventually(t, func() bool {
+		return !mgr.IsRecrawling("async-target")
+	}, 2*time.Second, 10*time.Millisecond)
 }
 

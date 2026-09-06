@@ -383,7 +383,6 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGameRecrawl(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	slug := r.PathValue("slug")
 	if slug == "" {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -391,20 +390,27 @@ func (s *Server) handleGameRecrawl(w http.ResponseWriter, r *http.Request) {
 			slug = parts[2]
 		}
 	}
+	if slug == "" {
+		http.Error(w, "slug is required", http.StatusBadRequest)
+		return
+	}
 
-	savedGame, err := s.workerMgr.RecrawlGame(ctx, slug)
+	started, err := s.workerMgr.RecrawlGameAsync(slug)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("recrawl error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Refresh", "true")
-		w.WriteHeader(http.StatusOK)
+	if !started {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":"already_running","slug":"` + slug + `","message":"Пересбор данных для этой игры уже выполняется в фоне"}`))
 		return
 	}
 
-	http.Redirect(w, r, "/games/"+savedGame.Slug, http.StatusFound)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"status":"accepted","slug":"` + slug + `","message":"Пересбор запущен в фоне"}`))
 }
 
 type DetailPageData struct {

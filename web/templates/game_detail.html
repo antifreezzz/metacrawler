@@ -24,8 +24,7 @@
         style="margin-top: 12px; width: 100%; justify-content: center; gap: 8px;"
         hx-post="/api/games/{{.Game.Slug}}/recrawl"
         hx-swap="none"
-        hx-disabled-elt="this"
-        onclick="this.innerText='🔄 Пересбор данных...'">
+        onclick="this.innerText='⏳ Пересбор запущен в фоне...'; this.disabled=true;">
         🔄 Пересобрать данные
       </button>
       {{end}}

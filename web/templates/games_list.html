@@ -87,8 +87,7 @@
         <button class="card-recrawl-btn" title="Пересобрать данные с Metacritic"
                 hx-post="/api/games/{{.Slug}}/recrawl"
                 hx-swap="none"
-                hx-disabled-elt="this"
-                onclick="event.stopPropagation(); event.preventDefault(); this.classList.add('loading');">
+                onclick="event.stopPropagation(); event.preventDefault(); this.classList.add('loading'); this.disabled=true; const span=this.querySelector('span'); if(span) span.innerText='Запущен...';">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
             <path d="M3 3v5h5"/>
