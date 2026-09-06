@@ -56,14 +56,20 @@ func TestParseGameDetails(t *testing.T) {
 			hasPC = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 94, *p.Metascore)
+			require.NotNil(t, p.Userscore)
+			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		case "playstation-5":
 			hasPS5 = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 96, *p.Metascore)
+			require.NotNil(t, p.Userscore)
+			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		case "xbox-series-x":
 			hasXbox = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 96, *p.Metascore)
+			require.NotNil(t, p.Userscore)
+			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		}
 	}
 	require.True(t, hasPC, "should have PC platform")
