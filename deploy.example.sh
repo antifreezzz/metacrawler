@@ -6,6 +6,16 @@ set -e
 VPS_HOST="${VPS_HOST:-user@your-vps-ip}"
 VPS_PATH="${VPS_PATH:-/opt/metacrawler}"
 
+# Make sure we're on main
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" != "main" ]; then
+    echo "⚠️ Current branch is '$CURRENT_BRANCH'. Switching to 'main'..."
+    git checkout main
+fi
+
+echo "📥 Pulling latest changes from origin/main..."
+git pull --rebase origin main
+
 echo "🚀 Pushing changes to origin/main..."
 git push origin main
 
