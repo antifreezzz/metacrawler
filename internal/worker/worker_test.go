@@ -230,3 +230,33 @@ func TestWorker_ForcedModes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, processed)
 }
+
+func TestWorker_RecrawlGame(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	g, revs := sampleGame("recrawl-target")
+	scraperMock.On("FetchGameDetails", mock.Anything, "recrawl-target").Return(g, revs, nil).Once()
+
+	llmSummary := &llm.SummaryResult{
+		CriticPros: "Awesome graphics",
+		UserPros:   "Fun gameplay",
+	}
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(llmSummary, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.5, 0.5}, nil).Once()
+
+	savedGame, err := mgr.RecrawlGame(ctx, "recrawl-target")
+	require.NoError(t, err)
+	require.NotNil(t, savedGame)
+	require.Equal(t, "recrawl-target", savedGame.Slug)
+
+	// Проверяем, что резюме сохранено
+	plat := savedGame.Platforms[0]
+	summary, err := db.GetPlatformSummary(ctx, plat.ID)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	require.Equal(t, "Awesome graphics", summary.CriticPros)
+}
+

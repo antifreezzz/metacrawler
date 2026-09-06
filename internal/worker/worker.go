@@ -312,121 +312,179 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 		m.setProgress(idx+1, fmt.Sprintf("Scraping game: %s (%d/%d)", slug, idx+1, len(toProcess)))
 		m.addLog(fmt.Sprintf("🎮 [%d/%d] Обработка игры: %s", idx+1, len(toProcess), slug))
 
-		game, reviews, scrapeErr := m.scraper.FetchGameDetails(ctx, slug)
-		if scrapeErr != nil {
-			m.addLog(fmt.Sprintf("  ⚠️ [Scraper] Ошибка сбора деталей карточки %s: %v (пропуск)", slug, scrapeErr))
-			continue // пропускаем битую карточку, продолжаем батч
-		}
-
-		criticCount := 0
-		userCount := 0
-		for _, r := range reviews {
-			if r.ReviewType == domain.ReviewTypeCritic {
-				criticCount++
-			} else {
-				userCount++
-			}
-		}
-		m.addLog(fmt.Sprintf("  ✅ [Scraper] \"%s\" загружена | Платформ: %d, Отзывов: %d (критики: %d, игроки: %d)", game.Title, len(game.Platforms), len(reviews), criticCount, userCount))
-
-		// 1. Сохранение игры и её платформ
-		if err := m.db.UpsertGame(ctx, game); err != nil {
-			m.addLog(fmt.Sprintf("  ❌ [DB] Ошибка сохранения игры %s: %v", slug, err))
+		_, err := m.processGame(ctx, slug, today)
+		if err != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [Worker] Ошибка обработки игры %s: %v (пропуск)", slug, err))
 			continue
 		}
+		processedCount++
+	}
 
-		// Получаем сохраненную игру для актуальных platform IDs
-		savedGame, err := m.db.GetGameBySlug(ctx, slug)
-		if err != nil || savedGame == nil {
-			m.addLog(fmt.Sprintf("  ❌ [DB] Ошибка получения сохраненной игры %s: %v", slug, err))
-			continue
-		}
+	m.setFinished(processedCount, nil)
+	return processedCount, nil
+}
 
-		// 2. Распределение отзывов по платформам и дедубликация
-		for _, p := range savedGame.Platforms {
-			var platReviews []domain.Review
-			for _, r := range reviews {
-				r.GamePlatformID = p.ID
-				platReviews = append(platReviews, r)
+// RecrawlGame выполняет принудительный пересбор данных для одной конкретной игры.
+func (m *Manager) RecrawlGame(ctx context.Context, slug string) (*domain.Game, error) {
+	today := domain.Now().Format("2006-01-02")
+	m.addLog(fmt.Sprintf("🔄 [Recrawl] Запущен принудительный пересбор для игры: %s", slug))
+	return m.processGame(ctx, slug, today)
+}
+
+// BackfillMissingSummaries обходит игры в базе данных и догенерирует резюме для платформ, у которых есть отзывы, но нет резюме.
+func (m *Manager) BackfillMissingSummaries(ctx context.Context) (int, error) {
+	games, err := m.db.ListGames(ctx, storage.ListFilter{Limit: 1000})
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, g := range games {
+		for _, p := range g.Platforms {
+			existing, _ := m.db.GetPlatformSummary(ctx, p.ID)
+			if existing != nil {
+				continue
 			}
-			savedCount, _ := m.db.SaveReviews(ctx, platReviews)
-
-			// 3. Выборка всех отзывов по платформе (включая ранее сохраненные) для саммари
-			allPlatReviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
+			reviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
+			if len(reviews) == 0 {
+				continue
+			}
 			var critics, users []domain.Review
-			for _, r := range allPlatReviews {
+			for _, r := range reviews {
 				if r.ReviewType == domain.ReviewTypeCritic {
 					critics = append(critics, r)
 				} else {
 					users = append(users, r)
 				}
 			}
-
-			// 4. Генерация резюме отзывов LLM
-			if len(critics) > 0 || len(users) > 0 {
-				summary, llmErr := m.llm.SummarizeReviews(ctx, savedGame.Title, p.Platform, critics, users)
-				if llmErr != nil {
-					m.addLog(fmt.Sprintf("  ⚠️ [LLM] Ошибка генерации резюме (%s): %v", p.Platform, llmErr))
-				} else if summary != nil {
-					_ = m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
-						GamePlatformID: p.ID,
-						CriticPros:     summary.CriticPros,
-						CriticCons:     summary.CriticCons,
-						UserPros:       summary.UserPros,
-						UserCons:       summary.UserCons,
-					})
-					if m.llm.HasAPIKey() {
-						m.addLog(fmt.Sprintf("  🤖 [LLM] Резюме отзывов (%s) сгенерировано через %s", p.Platform, m.llm.ChatModel()))
-					} else {
-						m.addLog(fmt.Sprintf("  💡 [LLM] Резюме отзывов (%s) сформировано (локальный фоллбэк, LLM_API_KEY не задан)", p.Platform))
-					}
-				}
-			} else {
-				m.addLog(fmt.Sprintf("  ℹ️ [Reviews] Платформа %s: сохранено отзывов: %d", p.Platform, savedCount))
+			summary, llmErr := m.llm.SummarizeReviews(ctx, g.Title, p.Platform, critics, users)
+			if llmErr == nil && summary != nil {
+				_ = m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+					GamePlatformID: p.ID,
+					CriticPros:     summary.CriticPros,
+					CriticCons:     summary.CriticCons,
+					UserPros:       summary.UserPros,
+					UserCons:       summary.UserCons,
+				})
+				count++
+				m.addLog(fmt.Sprintf("  🤖 [Backfill] Добавлено резюме для \"%s\" (%s)", g.Title, p.Platform))
 			}
 		}
+	}
+	return count, nil
+}
 
-		// 5. Векторный эмбеддинг игры
-		textForEmbedding := fmt.Sprintf("%s. %s. Developer: %s", savedGame.Title, savedGame.Description, savedGame.Developer)
-		vec, embErr := m.llm.GetEmbedding(ctx, textForEmbedding)
-		if embErr != nil {
-			m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка получения вектора: %v", embErr))
-		} else if len(vec) > 0 {
-			_ = m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
-				GameID:     savedGame.ID,
-				Vector:     vec,
-				Dimensions: len(vec),
-			})
-			if m.llm.HasAPIKey() {
-				m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор получен через %s (%d dims)", m.llm.EmbeddingModel(), len(vec)))
-			} else {
-				m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор сгенерирован локально (детерминированный фоллбэк, %d dims)", len(vec)))
-			}
-		}
-
-		// 6. Дополнительная часть 1: Анализ популярного летсплея на YouTube
-		if m.youtube != nil {
-			ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
-			if ytErr != nil {
-				m.addLog(fmt.Sprintf("  ⚠️ [YouTube] Летсплей не найден или ошибка: %v", ytErr))
-			} else if ytAnalysis != nil {
-				_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
-				if m.llm.HasAPIKey() {
-					m.addLog(fmt.Sprintf("  🎬 [YouTube] Найдено видео: \"%s\" (канал: %s, %d просм.) | Резюме блоггера через LLM", ytAnalysis.VideoTitle, ytAnalysis.ChannelName, ytAnalysis.ViewCount))
-				} else {
-					m.addLog(fmt.Sprintf("  🎬 [YouTube] Найдено видео: \"%s\" (канал: %s, %d просм.) | Заключение сформировано (фоллбэк)", ytAnalysis.VideoTitle, ytAnalysis.ChannelName, ytAnalysis.ViewCount))
-				}
-			}
-		}
-
-		// 7. Помечаем игру как обработанную сегодня
-		_ = m.db.MarkProcessed(ctx, slug, today)
-		m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу на дату %s (UTC+3)", savedGame.Title, today))
-		processedCount++
+func (m *Manager) processGame(ctx context.Context, slug, today string) (*domain.Game, error) {
+	game, reviews, scrapeErr := m.scraper.FetchGameDetails(ctx, slug)
+	if scrapeErr != nil {
+		return nil, fmt.Errorf("fetch details: %w", scrapeErr)
 	}
 
-	m.setFinished(processedCount, nil)
-	return processedCount, nil
+	criticCount := 0
+	userCount := 0
+	for _, r := range reviews {
+		if r.ReviewType == domain.ReviewTypeCritic {
+			criticCount++
+		} else {
+			userCount++
+		}
+	}
+	m.addLog(fmt.Sprintf("  ✅ [Scraper] \"%s\" загружена | Платформ: %d, Отзывов: %d (критики: %d, игроки: %d)", game.Title, len(game.Platforms), len(reviews), criticCount, userCount))
+
+	// 1. Сохранение игры и её платформ
+	if err := m.db.UpsertGame(ctx, game); err != nil {
+		return nil, fmt.Errorf("upsert game: %w", err)
+	}
+
+	// Получаем сохраненную игру для актуальных platform IDs
+	savedGame, err := m.db.GetGameBySlug(ctx, slug)
+	if err != nil || savedGame == nil {
+		return nil, fmt.Errorf("get saved game: %w", err)
+	}
+
+	// 2. Распределение отзывов по платформам и дедубликация
+	for i, p := range savedGame.Platforms {
+		var platReviews []domain.Review
+		for _, r := range reviews {
+			r.GamePlatformID = p.ID
+			platReviews = append(platReviews, r)
+		}
+		savedCount, _ := m.db.SaveReviews(ctx, platReviews)
+
+		// 3. Выборка всех отзывов по платформе (включая ранее сохраненные) для саммари
+		allPlatReviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
+		savedGame.Platforms[i].Reviews = allPlatReviews
+		var critics, users []domain.Review
+		for _, r := range allPlatReviews {
+			if r.ReviewType == domain.ReviewTypeCritic {
+				critics = append(critics, r)
+			} else {
+				users = append(users, r)
+			}
+		}
+
+		// 4. Генерация резюме отзывов LLM
+		if len(critics) > 0 || len(users) > 0 {
+			summary, llmErr := m.llm.SummarizeReviews(ctx, savedGame.Title, p.Platform, critics, users)
+			if llmErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [LLM] Ошибка генерации резюме (%s): %v", p.Platform, llmErr))
+			} else if summary != nil {
+				platformSummary := &domain.PlatformSummary{
+					GamePlatformID: p.ID,
+					CriticPros:     summary.CriticPros,
+					CriticCons:     summary.CriticCons,
+					UserPros:       summary.UserPros,
+					UserCons:       summary.UserCons,
+				}
+				_ = m.db.UpsertPlatformSummary(ctx, platformSummary)
+				savedGame.Platforms[i].Summary = platformSummary
+				if m.llm.HasAPIKey() {
+					m.addLog(fmt.Sprintf("  🤖 [LLM] Резюме отзывов (%s) сгенерировано через %s", p.Platform, m.llm.ChatModel()))
+				} else {
+					m.addLog(fmt.Sprintf("  💡 [LLM] Резюме отзывов (%s) сформировано (локальный фоллбэк, LLM_API_KEY не задан)", p.Platform))
+				}
+			}
+		} else {
+			m.addLog(fmt.Sprintf("  ℹ️ [Reviews] Платформа %s: сохранено отзывов: %d", p.Platform, savedCount))
+		}
+	}
+
+	// 5. Векторный эмбеддинг игры
+	textForEmbedding := fmt.Sprintf("%s. %s. Developer: %s", savedGame.Title, savedGame.Description, savedGame.Developer)
+	vec, embErr := m.llm.GetEmbedding(ctx, textForEmbedding)
+	if embErr != nil {
+		m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка получения вектора: %v", embErr))
+	} else if len(vec) > 0 {
+		_ = m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
+			GameID:     savedGame.ID,
+			Vector:     vec,
+			Dimensions: len(vec),
+		})
+		if m.llm.HasAPIKey() {
+			m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор получен через %s (%d dims)", m.llm.EmbeddingModel(), len(vec)))
+		} else {
+			m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор сгенерирован локально (детерминированный фоллбэк, %d dims)", len(vec)))
+		}
+	}
+
+	// 6. YouTube
+	if m.youtube != nil {
+		ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
+		if ytErr != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [YouTube] Летсплей не найден или ошибка: %v", ytErr))
+		} else if ytAnalysis != nil {
+			_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
+		}
+	}
+
+	// 7. Помечаем игру как обработанную
+	if today != "" {
+		_ = m.db.MarkProcessed(ctx, slug, today)
+		m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу на дату %s (UTC+3)", savedGame.Title, today))
+	} else {
+		m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу", savedGame.Title))
+	}
+
+	return savedGame, nil
 }
 
 func (m *Manager) applyCooldown(ctx context.Context) {
