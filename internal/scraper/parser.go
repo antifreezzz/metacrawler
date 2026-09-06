@@ -203,17 +203,67 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 
 	// 3. Извлечение Userscore для игры / дефолтной платформы
 	var defaultUserScore *float64
-	doc.Find("[data-testid='global-score-header']").Each(func(i int, s *goquery.Selection) {
-		if strings.Contains(strings.ToLower(s.Text()), "user score") {
-			parent := s.Closest(".flex")
-			valStr := strings.TrimSpace(parent.Find("[data-testid='global-score-value']").Text())
-			if valStr != "" && strings.ToLower(valStr) != "tbd" {
+	// Вариант 1: Поиск по блокам global-score-wrapper
+	doc.Find("[data-testid='global-score-wrapper']").Each(func(i int, s *goquery.Selection) {
+		header := strings.ToLower(s.Find("[data-testid='global-score-header']").Text())
+		if strings.Contains(header, "user score") {
+			valStr := strings.TrimSpace(s.Find("[data-testid='global-score-value']").Text())
+			if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
 				if val, err := strconv.ParseFloat(valStr, 64); err == nil {
 					defaultUserScore = &val
 				}
 			}
 		}
 	})
+
+	// Вариант 2 (fallback): Если wrapper не найден или структура изменилась, поиск от global-score-header вверх
+	if defaultUserScore == nil {
+		doc.Find("[data-testid='global-score-header']").Each(func(i int, s *goquery.Selection) {
+			if defaultUserScore != nil {
+				return
+			}
+			if strings.Contains(strings.ToLower(s.Text()), "user score") {
+				wrapper := s.Closest("[data-testid='global-score-wrapper']")
+				if wrapper.Length() == 0 {
+					wrapper = s.ParentsFiltered(".flex").Last()
+				}
+				valStr := strings.TrimSpace(wrapper.Find("[data-testid='global-score-value']").Text())
+				if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
+					if val, err := strconv.ParseFloat(valStr, 64); err == nil {
+						defaultUserScore = &val
+					}
+				}
+			}
+		})
+	}
+
+	// Вариант 3 (fallback): Поиск по атрибутам title/aria-label блока global-score
+	if defaultUserScore == nil {
+		doc.Find("[data-testid='global-score'] [title*='User score'], [data-testid='global-score'] [aria-label*='User score']").Each(func(i int, s *goquery.Selection) {
+			if defaultUserScore != nil {
+				return
+			}
+			valStr := strings.TrimSpace(s.Find("[data-testid='global-score-value']").Text())
+			if valStr == "" {
+				raw, exists := s.Attr("title")
+				if !exists || raw == "" {
+					raw, _ = s.Attr("aria-label")
+				}
+				parts := strings.Fields(raw)
+				for idx, part := range parts {
+					if strings.ToLower(part) == "score" && idx+1 < len(parts) {
+						valStr = parts[idx+1]
+						break
+					}
+				}
+			}
+			if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
+				if val, err := strconv.ParseFloat(valStr, 64); err == nil {
+					defaultUserScore = &val
+				}
+			}
+		})
+	}
 
 	// 4. Платформы и Metascore
 	platformMap := make(map[string]domain.GamePlatform)
