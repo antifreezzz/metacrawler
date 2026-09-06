@@ -182,4 +182,61 @@ func TestLlamaCpp_DynamicModelAndNoAPIKey(t *testing.T) {
 	require.Equal(t, "/models/LiquidAI-LFM2.5-Q4_K_M.gguf", requestedModel, "Should dynamically discover the loaded model from /models")
 }
 
+func TestSummarizeReviews_GracefulFallbackOnNetworkError(t *testing.T) {
+	// Server returns 500 Internal Server Error
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "GPU out of memory", http.StatusInternalServerError)
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o", "local")
+
+	criticReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "GameSpot", Text: "Superb combat system and world building."},
+	}
+	userReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeUser, Author: "Gamer99", Text: "One of the best games ever made."},
+	}
+
+	summary, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
+	require.NoError(t, err, "Should not return error on LLM 500, but fall back gracefully")
+	require.NotNil(t, summary)
+	require.NotEmpty(t, summary.CriticPros)
+	require.NotEmpty(t, summary.UserPros)
+}
+
+func TestSummarizeReviews_GracefulFallbackOnInvalidJSON(t *testing.T) {
+	// Server returns non-JSON text
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "I apologize, but as an AI language model I cannot format this.",
+					},
+				},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o", "local")
+
+	criticReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Great gameplay and solid graphics."},
+	}
+	userReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeUser, Author: "Player", Text: "Enjoyed every hour of it."},
+	}
+
+	summary, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
+	require.NoError(t, err, "Should not return error on invalid JSON, but fall back gracefully")
+	require.NotNil(t, summary)
+	require.NotEmpty(t, summary.CriticPros)
+	require.NotEmpty(t, summary.UserPros)
+}
+
+
 

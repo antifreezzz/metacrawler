@@ -281,12 +281,8 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 	}
 
 	resp, respBody, err := c.sendRequest(ctx, "POST", "/chat/completions", bodyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("execute request: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, string(respBody))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return c.generateFallbackSummary(criticReviews, userReviews), nil
 	}
 
 	content := gjson.GetBytes(respBody, "choices.0.message.content").String()
@@ -297,7 +293,11 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 
 	var result SummaryResult
 	if err := json.Unmarshal([]byte(cleanContent), &result); err != nil {
-		return nil, fmt.Errorf("unmarshal llm json response (%s): %w", cleanContent, err)
+		return c.generateFallbackSummary(criticReviews, userReviews), nil
+	}
+
+	if result.CriticPros == "" && result.CriticCons == "" && result.UserPros == "" && result.UserCons == "" {
+		return c.generateFallbackSummary(criticReviews, userReviews), nil
 	}
 
 	return &result, nil
