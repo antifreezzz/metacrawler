@@ -35,11 +35,11 @@ COPY --from=builder /src/web/templates /app/web/templates
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-ENV PORT=8080
+ENV PORT=8079
 ENV DB_PATH=/app/data/metacrawler.db
 ENV TZ=Europe/Moscow
 
-EXPOSE 8080
+EXPOSE 8079
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

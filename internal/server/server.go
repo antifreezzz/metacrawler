@@ -122,6 +122,11 @@ func (s *Server) loadTemplates() {
 }
 
 func (s *Server) routes() {
+	s.router.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	s.router.HandleFunc("GET /", s.handleIndex)
 	s.router.HandleFunc("GET /login", s.handleLoginPage)
 	s.router.HandleFunc("POST /login", s.handleLoginSubmit)
