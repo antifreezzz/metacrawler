@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -342,3 +343,76 @@ func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
 	require.Equal(t, int64(1500000), fetched.ViewCount)
 	require.Contains(t, fetched.Summary, "Блоггер в восторге")
 }
+
+func TestCountGames_WithFilters(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-1", Slug: "g-1", Title: "Elden Ring",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}, {Platform: "ps5"}},
+	})
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-2", Slug: "g-2", Title: "Dark Souls 3",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}},
+	})
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-3", Slug: "g-3", Title: "Bloodborne",
+		Platforms: []domain.GamePlatform{{Platform: "ps4"}},
+	})
+
+	// Total count
+	count, err := db.CountGames(ctx, storage.ListFilter{})
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+
+	// Search count
+	count, err = db.CountGames(ctx, storage.ListFilter{Search: "Souls"})
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	// Platform count
+	count, err = db.CountGames(ctx, storage.ListFilter{Platform: "pc"})
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	// Search + Platform count
+	count, err = db.CountGames(ctx, storage.ListFilter{Search: "Elden", Platform: "ps5"})
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+}
+
+func TestListGames_Pagination(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	for i := 1; i <= 5; i++ {
+		_ = db.UpsertGame(ctx, &domain.Game{
+			ID:    fmt.Sprintf("g-%d", i),
+			Slug:  fmt.Sprintf("game-%d", i),
+			Title: fmt.Sprintf("Game %d", i),
+			ReleaseDate: fmt.Sprintf("2024-01-0%d", i),
+		})
+	}
+
+	// Page 1 with limit 2
+	p1, err := db.ListGames(ctx, storage.ListFilter{Limit: 2, Offset: 0, Sort: "newest"})
+	require.NoError(t, err)
+	require.Len(t, p1, 2)
+	require.Equal(t, "Game 5", p1[0].Title)
+	require.Equal(t, "Game 4", p1[1].Title)
+
+	// Page 2 with limit 2
+	p2, err := db.ListGames(ctx, storage.ListFilter{Limit: 2, Offset: 2, Sort: "newest"})
+	require.NoError(t, err)
+	require.Len(t, p2, 2)
+	require.Equal(t, "Game 3", p2[0].Title)
+	require.Equal(t, "Game 2", p2[1].Title)
+
+	// Page 3 with limit 2
+	p3, err := db.ListGames(ctx, storage.ListFilter{Limit: 2, Offset: 4, Sort: "newest"})
+	require.NoError(t, err)
+	require.Len(t, p3, 1)
+	require.Equal(t, "Game 1", p3[0].Title)
+}
+

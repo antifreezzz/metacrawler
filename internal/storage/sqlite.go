@@ -299,6 +299,33 @@ type ListFilter struct {
 	Offset   int
 }
 
+func (d *DB) CountGames(ctx context.Context, filter ListFilter) (int, error) {
+	whereClauses := []string{"1=1"}
+	var args []interface{}
+
+	if strings.TrimSpace(filter.Search) != "" {
+		whereClauses = append(whereClauses, "LOWER(g.title) LIKE ?")
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(filter.Search))+"%")
+	}
+
+	if strings.TrimSpace(filter.Platform) != "" {
+		whereClauses = append(whereClauses, "EXISTS (SELECT 1 FROM game_platforms gp WHERE gp.game_id = g.id AND LOWER(gp.platform) = ?)")
+		args = append(args, strings.ToLower(strings.TrimSpace(filter.Platform)))
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM games g
+		WHERE %s;
+	`, strings.Join(whereClauses, " AND "))
+
+	var count int
+	if err := d.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count games query: %w", err)
+	}
+	return count, nil
+}
+
 func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 100
