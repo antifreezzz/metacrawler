@@ -117,3 +117,18 @@ func TestGetEmbedding_Mock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []float32{0.1, 0.2, 0.3}, vec)
 }
+
+func TestGetEmbedding_Remote404Fallback(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><body>Not Found</body></html>"))
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o-mini", "text-embedding-3-small")
+
+	vec, err := client.GetEmbedding(context.Background(), "A fantasy action RPG.")
+	require.NoError(t, err)
+	require.Len(t, vec, 256, "Should gracefully fall back to Go vectorizer on 404")
+}
+
