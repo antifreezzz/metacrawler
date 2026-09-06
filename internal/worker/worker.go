@@ -75,28 +75,39 @@ type Manager struct {
 
 	subscribers   map[chan StatusInfo]struct{}
 	subscribersMu sync.RWMutex
+
+	recrawlingSlugs map[string]struct{}
+	recrawlingMu    sync.Mutex
 }
 
 func NewManager(db *storage.DB, scraper ScraperClient, llmClient LLMClient, ytClient YouTubeClient, cfg *config.Config) *Manager {
 	return &Manager{
-		db:          db,
-		scraper:     scraper,
-		llm:         llmClient,
-		youtube:     ytClient,
-		cfg:         cfg,
-		status:      "Idle",
-		subscribers: make(map[chan StatusInfo]struct{}),
-		logs:        []string{"[Система] Воркер инициализирован и готов к работе."},
+		db:              db,
+		scraper:         scraper,
+		llm:             llmClient,
+		youtube:         ytClient,
+		cfg:             cfg,
+		status:          "Idle",
+		subscribers:     make(map[chan StatusInfo]struct{}),
+		recrawlingSlugs: make(map[string]struct{}),
+		logs:            []string{"[Система] Воркер инициализирован и готов к работе."},
 	}
 }
 
-func (m *Manager) addLog(msg string) {
+func (m *Manager) addLogLocked(msg string) {
 	timeStr := domain.Now().Format("15:04:05")
 	entry := fmt.Sprintf("[%s] %s", timeStr, msg)
 	m.logs = append(m.logs, entry)
 	if len(m.logs) > 300 {
 		m.logs = m.logs[len(m.logs)-300:]
 	}
+}
+
+func (m *Manager) addLog(msg string) {
+	m.mu.Lock()
+	m.addLogLocked(msg)
+	m.mu.Unlock()
+	m.notifySubscribers()
 }
 
 func (m *Manager) StartCron() error {
@@ -187,7 +198,7 @@ func (m *Manager) setRunning(task string, total int) {
 	m.totalInBatch = total
 	m.currentIndex = 0
 	m.lastError = ""
-	m.addLog(task)
+	m.addLogLocked(task)
 	m.mu.Unlock()
 	m.notifySubscribers()
 }
@@ -196,7 +207,7 @@ func (m *Manager) setProgress(current int, task string) {
 	m.mu.Lock()
 	m.currentIndex = current
 	m.currentTask = task
-	m.addLog(task)
+	m.addLogLocked(task)
 	m.mu.Unlock()
 	m.notifySubscribers()
 }
@@ -209,11 +220,11 @@ func (m *Manager) setFinished(processed int, err error) {
 		m.status = "Error"
 		m.lastError = err.Error()
 		m.currentTask = fmt.Sprintf("Error: %v", err)
-		m.addLog(fmt.Sprintf("❌ Ошибка выполнения: %v", err))
+		m.addLogLocked(fmt.Sprintf("❌ Ошибка выполнения: %v", err))
 	} else {
 		m.status = "Idle"
 		m.currentTask = fmt.Sprintf("Finished. Processed %d games.", processed)
-		m.addLog(fmt.Sprintf("🏁 Цикл завершён (UTC+3). Успешно обработано игр: %d.", processed))
+		m.addLogLocked(fmt.Sprintf("🏁 Цикл завершён (UTC+3). Успешно обработано игр: %d.", processed))
 	}
 	m.mu.Unlock()
 	m.notifySubscribers()
@@ -329,6 +340,46 @@ func (m *Manager) RecrawlGame(ctx context.Context, slug string) (*domain.Game, e
 	today := domain.Now().Format("2006-01-02")
 	m.addLog(fmt.Sprintf("🔄 [Recrawl] Запущен принудительный пересбор для игры: %s", slug))
 	return m.processGame(ctx, slug, today)
+}
+
+// RecrawlGameAsync запускает принудительный пересбор данных игры в фоновой горутине.
+// Возвращает (false, nil), если пересбор для этой игры уже выполняется в данный момент.
+func (m *Manager) RecrawlGameAsync(slug string) (bool, error) {
+	m.recrawlingMu.Lock()
+	if _, active := m.recrawlingSlugs[slug]; active {
+		m.recrawlingMu.Unlock()
+		return false, nil
+	}
+	m.recrawlingSlugs[slug] = struct{}{}
+	m.recrawlingMu.Unlock()
+
+	go func() {
+		defer func() {
+			m.recrawlingMu.Lock()
+			delete(m.recrawlingSlugs, slug)
+			m.recrawlingMu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+
+		_, err := m.RecrawlGame(ctx, slug)
+		if err != nil {
+			m.addLog(fmt.Sprintf("❌ [Recrawl] Ошибка пересбора \"%s\": %v", slug, err))
+		} else {
+			m.addLog(fmt.Sprintf("🏁 [Recrawl] Пересбор для \"%s\" успешно завершён", slug))
+		}
+	}()
+
+	return true, nil
+}
+
+// IsRecrawling проверяет, выполняется ли сейчас пересбор для указанного slug.
+func (m *Manager) IsRecrawling(slug string) bool {
+	m.recrawlingMu.Lock()
+	defer m.recrawlingMu.Unlock()
+	_, active := m.recrawlingSlugs[slug]
+	return active
 }
 
 // BackfillMissingSummaries обходит игры в базе данных и догенерирует резюме для платформ, у которых есть отзывы, но нет резюме.

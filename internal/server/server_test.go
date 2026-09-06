@@ -265,14 +265,13 @@ func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
 	srv.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 
-	// 2. С авторизацией Basic Auth
+	// 2. С авторизацией Basic Auth - возвращает 202 Accepted
 	reqAuth := httptest.NewRequest("POST", "/api/games/recrawl-game/recrawl", nil)
 	reqAuth.SetBasicAuth("admin", "secret-password")
 	reqAuth.Header.Set("HX-Request", "true")
 	recAuth := httptest.NewRecorder()
 	srv.Router().ServeHTTP(recAuth, reqAuth)
-	// dummyScraper возвращает nil, поэтому вернет 500 (или 200 при наличии данных)
-	require.NotEqual(t, http.StatusUnauthorized, recAuth.Code)
+	require.Equal(t, http.StatusAccepted, recAuth.Code)
 }
 
 func TestLogin_OpenRedirectPrevention(t *testing.T) {

@@ -1241,8 +1241,18 @@
               : "Не удалось запустить сбор. Попробуйте ещё раз.",
             !evt.detail.successful,
           );
-        if (path.startsWith("/api/games") && !evt.detail.successful)
+        if (path.includes("/recrawl")) {
+          const status = evt.detail.xhr?.status;
+          if (status === 202) {
+            showToast("🔄 Пересбор игры запущен в фоне. За ходом сбора можно следить в Мониторинге.");
+          } else if (status === 409) {
+            showToast("⚠️ Пересбор для этой игры уже выполняется в фоне.", true);
+          } else if (!evt.detail.successful) {
+            showToast("Не удалось запустить пересбор. Попробуйте ещё раз.", true);
+          }
+        } else if (path.startsWith("/api/games") && !evt.detail.successful) {
           showToast("Не удалось обновить каталог. Попробуйте ещё раз.", true);
+        }
         if (evt.detail.target?.id === "games-list")
           evt.detail.target.setAttribute("aria-busy", "false");
       });
