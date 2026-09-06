@@ -216,15 +216,25 @@ type LoginPageData struct {
 	IsAdmin  bool
 }
 
+func sanitizeRedirectURL(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "/monitoring"
+	}
+	// Защита от Open Redirect (CWE-601): разрешаем только относительные пути внутри сайта.
+	// Запрещаем protocol-relative (//) и обратные слэши (/\)
+	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.HasPrefix(target, "/\\") {
+		return target
+	}
+	return "/monitoring"
+}
+
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if s.isAuthenticated(r) {
 		http.Redirect(w, r, "/monitoring", http.StatusFound)
 		return
 	}
-	next := r.URL.Query().Get("next")
-	if next == "" {
-		next = "/monitoring"
-	}
+	next := sanitizeRedirectURL(r.URL.Query().Get("next"))
 	data := LoginPageData{
 		Next: next,
 	}
@@ -236,10 +246,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	next := r.FormValue("next")
-	if next == "" {
-		next = "/monitoring"
-	}
+	next := sanitizeRedirectURL(r.FormValue("next"))
 
 	if !s.auth.Authenticate(username, password) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

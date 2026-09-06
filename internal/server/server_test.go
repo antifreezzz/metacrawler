@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -272,5 +273,57 @@ func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
 	srv.Router().ServeHTTP(recAuth, reqAuth)
 	// dummyScraper возвращает nil, поэтому вернет 500 (или 200 при наличии данных)
 	require.NotEqual(t, http.StatusUnauthorized, recAuth.Code)
+}
+
+func TestLogin_OpenRedirectPrevention(t *testing.T) {
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Port:          "8079",
+		AdminUsername: "admin",
+		AdminPassword: "password123",
+		SessionSecret: "secret-key",
+	}
+	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	maliciousTargets := []string{
+		"https://evil.com/phishing",
+		"http://attacker.com",
+		"//evil.com",
+		"/\\evil.com",
+		"javascript:alert(1)",
+	}
+
+	for _, target := range maliciousTargets {
+		// 1. GET /login?next=... должен отсанитизировать значение в HTML
+		reqGet := httptest.NewRequest("GET", "/login?next="+target, nil)
+		recGet := httptest.NewRecorder()
+		srv.Router().ServeHTTP(recGet, reqGet)
+		require.Equal(t, http.StatusOK, recGet.Code)
+		require.NotContains(t, recGet.Body.String(), `value="`+target+`"`)
+		require.Contains(t, recGet.Body.String(), `value="/monitoring"`)
+
+		// 2. POST /login с вредоносным next должен редиректить на /monitoring, а не во внешний мир
+		formBody := "username=admin&password=password123&next=" + target
+		reqPost := httptest.NewRequest("POST", "/login", strings.NewReader(formBody))
+		reqPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recPost := httptest.NewRecorder()
+		srv.Router().ServeHTTP(recPost, reqPost)
+		require.Equal(t, http.StatusFound, recPost.Code)
+		require.Equal(t, "/monitoring", recPost.Header().Get("Location"))
+	}
+
+	// 3. Валидный относительный URL должен работать корректно
+	formValid := "username=admin&password=password123&next=/games/elden-ring"
+	reqValid := httptest.NewRequest("POST", "/login", strings.NewReader(formValid))
+	reqValid.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recValid := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recValid, reqValid)
+	require.Equal(t, http.StatusFound, recValid.Code)
+	require.Equal(t, "/games/elden-ring", recValid.Header().Get("Location"))
 }
 

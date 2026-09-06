@@ -55,7 +55,6 @@ func NewClientWithConfig(llmClient *llm.Client, whisperBinary, whisperModel, coo
 func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, whisperModel, cookiesPath string) *Client {
 	if whisperBinary == "" && whisperURL == "" {
 		for _, p := range []string{
-			"/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli",
 			"/usr/local/bin/whisper-cli",
 			"/usr/bin/whisper-cli",
 		} {
@@ -68,10 +67,9 @@ func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, w
 
 	if whisperModel == "" && whisperURL == "" {
 		for _, p := range []string{
-			"/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin",
-			"/home/antifreezzz/whisper.cpp/models/ggml-base.bin",
 			"models/ggml-tiny.bin",
 			"models/ggml-base.bin",
+			"/usr/local/share/whisper/models/ggml-tiny.bin",
 		} {
 			if _, err := os.Stat(p); err == nil {
 				whisperModel = p
@@ -457,12 +455,14 @@ func (c *Client) getYtDlpCommonArgs() []string {
 	return args
 }
 
+var validVideoIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,64}$`)
+
 func (c *Client) findYtDlp() string {
 	ytDlpPath, err := exec.LookPath("yt-dlp")
 	if err == nil && ytDlpPath != "" {
 		return ytDlpPath
 	}
-	for _, p := range []string{"/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp", "/home/antifreezzz/.local/bin/yt-dlp"} {
+	for _, p := range []string{"/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"} {
 		if _, statErr := os.Stat(p); statErr == nil {
 			return p
 		}
@@ -472,6 +472,10 @@ func (c *Client) findYtDlp() string {
 
 // fetchViaYtDlp пытается загрузить субтитры через утилиту yt-dlp (если доступна в системе).
 func (c *Client) fetchViaYtDlp(ctx context.Context, videoID string) (string, error) {
+	if !validVideoIDRe.MatchString(videoID) {
+		return "", fmt.Errorf("invalid video ID format")
+	}
+
 	ytDlpPath := c.findYtDlp()
 	if ytDlpPath == "" {
 		return "", fmt.Errorf("yt-dlp not found")
@@ -664,6 +668,10 @@ func (c *Client) fetchViaWebPage(ctx context.Context, videoID string) (string, e
 }
 
 func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, error) {
+	if !validVideoIDRe.MatchString(videoID) {
+		return "", fmt.Errorf("invalid video ID format")
+	}
+
 	if c.whisperURL == "" {
 		if c.whisperBinaryPath == "" || c.whisperModelPath == "" {
 			return "", fmt.Errorf("whisper binary or model not configured")

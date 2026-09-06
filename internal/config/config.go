@@ -52,8 +52,8 @@ func Load() *Config {
 		AdminPassword:      getEnv("ADMIN_PASSWORD", ""),
 		SessionSecret:      getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
 		WhisperURL:         getEnv("WHISPER_URL", ""),
-		WhisperBinaryPath:  getEnv("WHISPER_BINARY_PATH", "/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli"),
-		WhisperModelPath:   getEnv("WHISPER_MODEL_PATH", "/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin"),
+		WhisperBinaryPath:  getEnv("WHISPER_BINARY_PATH", ""),
+		WhisperModelPath:   getEnv("WHISPER_MODEL_PATH", ""),
 		YouTubeCookiesPath: getEnv("YOUTUBE_COOKIES_PATH", ""),
 	}
 }
