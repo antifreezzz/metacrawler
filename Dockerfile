@@ -22,8 +22,10 @@ FROM alpine:3.21
 
 WORKDIR /app
 
-# Устанавливаем su-exec для корректного сброса прав после монтирования томов
-RUN apk add --no-cache ca-certificates tzdata su-exec && \
+# Устанавливаем su-exec, nodejs, ffmpeg и актуальный бинарник yt-dlp для решения JS-челленджей YouTube и обработки аудио
+RUN apk add --no-cache ca-certificates tzdata su-exec nodejs ffmpeg curl python3 && \
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp && \
     addgroup -S appgroup && adduser -S appuser -G appgroup && \
     mkdir -p /app/data && chown -R appuser:appgroup /app
 
