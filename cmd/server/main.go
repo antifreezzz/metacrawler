@@ -55,6 +55,15 @@ func main() {
 	}
 	defer workerMgr.StopCron()
 
+	// Фоновая проверка и догенерация недостающих резюме для ранее собранных игр
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		if count, err := workerMgr.BackfillMissingSummaries(ctx); err == nil && count > 0 {
+			log.Printf("Backfill completed: generated %d missing review summaries", count)
+		}
+	}()
+
 	srv := server.New(db, workerMgr, llmClient, cfg)
 
 	httpServer := &http.Server{

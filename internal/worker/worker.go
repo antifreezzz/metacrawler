@@ -378,6 +378,9 @@ func (m *Manager) processGame(ctx context.Context, slug, today string) (*domain.
 	if scrapeErr != nil {
 		return nil, fmt.Errorf("fetch details: %w", scrapeErr)
 	}
+	if game == nil {
+		return nil, fmt.Errorf("no game details found for %s", slug)
+	}
 
 	criticCount := 0
 	userCount := 0
