@@ -5,11 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: metacrawler
     restart: unless-stopped
-    ports:
-      # Бинд только на loopback - наружу торчит исключительно Nginx (443).
-      - "127.0.0.1:8079:8079"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: "host"
     volumes:
       - ./data:/app/data
     env_file:
@@ -26,9 +22,10 @@ services:
       - SESSION_SECRET=${SESSION_SECRET:-metacrawler-secret-key}
       - EMBEDDING_ENGINE=${EMBEDDING_ENGINE:-local}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-local}
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:8080/v1}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://localhost:8666/v1}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_MODEL=${LLM_MODEL:-auto}
+      - WHISPER_URL=${WHISPER_URL:-http://localhost:8666/v1/audio/transcriptions}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8079/healthz"]
       interval: 15s
