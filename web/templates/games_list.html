@@ -1,11 +1,9 @@
 {{define "games_list"}}
 <div class="section-heading">
   <h2>
-    {{if or .Filter.Search .Filter.Platform}}Результаты поиска{{else}}Откройте
-    для себя{{end}}
+    {{if or .Filter.Search .Filter.Platform}}Результаты поиска{{else}}Откройте для себя{{end}}
     <span class="count"
-      >Показано: {{len .Games}}{{if eq (len .Games) 100}} · первые
-      100{{end}}</span
+      >{{if .Pagination.TotalItems}}Показано: {{.Pagination.StartItem}}–{{.Pagination.EndItem}} из {{.Pagination.TotalItems}}{{else}}Показано: {{len .Games}}{{end}}</span
     >
   </h2>
   <div class="legend">
@@ -84,8 +82,74 @@
           >Оценки пока не добавлены</span
         >{{end}}
       </div>
+      {{if $.IsAdmin}}
+      <div class="card-admin-actions">
+        <button class="card-recrawl-btn" title="Пересобрать данные с Metacritic"
+                hx-post="/api/games/{{.Slug}}/recrawl"
+                hx-swap="none"
+                hx-disabled-elt="this"
+                onclick="event.stopPropagation(); event.preventDefault(); this.classList.add('loading');">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 21h5v-5"/>
+          </svg>
+          <span>Пересобрать</span>
+        </button>
+      </div>
+      {{end}}
     </div>
   </a>
   {{end}}
 </div>
+
+{{if gt .Pagination.TotalPages 1}}
+<div class="pagination-container">
+  <nav class="pagination" aria-label="Страницы каталога">
+    {{if .Pagination.HasPrev}}
+    <a class="page-btn page-nav"
+       href="/?page={{.Pagination.PrevPage}}{{if .Filter.Search}}&search={{.Filter.Search}}{{end}}{{if .Filter.Platform}}&platform={{.Filter.Platform}}{{end}}{{if .Filter.Sort}}&sort={{.Filter.Sort}}{{end}}"
+       hx-get="/api/games?page={{.Pagination.PrevPage}}{{if .Filter.Search}}&search={{.Filter.Search}}{{end}}{{if .Filter.Platform}}&platform={{.Filter.Platform}}{{end}}{{if .Filter.Sort}}&sort={{.Filter.Sort}}{{end}}"
+       hx-target="#games-list"
+       hx-indicator="#catalog-loading, #games-list"
+       title="Предыдущая страница">
+      &larr; Назад
+    </a>
+    {{else}}
+    <span class="page-btn page-nav disabled">&larr; Назад</span>
+    {{end}}
+
+    <div class="page-numbers">
+      {{range .Pagination.Pages}}
+      {{if eq . $.Pagination.CurrentPage}}
+      <span class="page-btn current" aria-current="page">{{.}}</span>
+      {{else}}
+      <a class="page-btn"
+         href="/?page={{.}}{{if $.Filter.Search}}&search={{$.Filter.Search}}{{end}}{{if $.Filter.Platform}}&platform={{$.Filter.Platform}}{{end}}{{if $.Filter.Sort}}&sort={{$.Filter.Sort}}{{end}}"
+         hx-get="/api/games?page={{.}}{{if $.Filter.Search}}&search={{$.Filter.Search}}{{end}}{{if $.Filter.Platform}}&platform={{$.Filter.Platform}}{{end}}{{if $.Filter.Sort}}&sort={{$.Filter.Sort}}{{end}}"
+         hx-target="#games-list"
+         hx-indicator="#catalog-loading, #games-list">
+        {{.}}
+      </a>
+      {{end}}
+      {{end}}
+    </div>
+
+    {{if .Pagination.HasNext}}
+    <a class="page-btn page-nav"
+       href="/?page={{.Pagination.NextPage}}{{if .Filter.Search}}&search={{.Filter.Search}}{{end}}{{if .Filter.Platform}}&platform={{.Filter.Platform}}{{end}}{{if .Filter.Sort}}&sort={{.Filter.Sort}}{{end}}"
+       hx-get="/api/games?page={{.Pagination.NextPage}}{{if .Filter.Search}}&search={{.Filter.Search}}{{end}}{{if .Filter.Platform}}&platform={{.Filter.Platform}}{{end}}{{if .Filter.Sort}}&sort={{.Filter.Sort}}{{end}}"
+       hx-target="#games-list"
+       hx-indicator="#catalog-loading, #games-list"
+       title="Следующая страница">
+      Вперед &rarr;
+    </a>
+    {{else}}
+    <span class="page-btn page-nav disabled">Вперед &rarr;</span>
+    {{end}}
+  </nav>
+</div>
+{{end}}
+
 {{end}} {{end}}

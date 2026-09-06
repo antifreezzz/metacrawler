@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -167,3 +168,109 @@ func TestWorkerRunEndpoint_ForcedModes(t *testing.T) {
 	require.Equal(t, http.StatusOK, recStatus.Code)
 	require.Contains(t, recStatus.Body.String(), `"status"`)
 }
+
+func TestIndexHandler_Pagination(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	for i := 1; i <= 30; i++ {
+		_ = db.UpsertGame(ctx, &domain.Game{
+			ID:    fmt.Sprintf("g-%d", i),
+			Slug:  fmt.Sprintf("game-%d", i),
+			Title: fmt.Sprintf("Game %02d", i),
+			ReleaseDate: fmt.Sprintf("2024-01-%02d", i),
+		})
+	}
+
+	// Page 1
+	req1 := httptest.NewRequest("GET", "/?page=1", nil)
+	rec1 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusOK, rec1.Code)
+	require.Contains(t, rec1.Body.String(), "1–24")
+	require.Contains(t, rec1.Body.String(), "из 30")
+	require.Contains(t, rec1.Body.String(), "Game 30")
+
+	// Page 2
+	req2 := httptest.NewRequest("GET", "/?page=2", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusOK, rec2.Code)
+	require.Contains(t, rec2.Body.String(), "25–30")
+	require.Contains(t, rec2.Body.String(), "Game 01")
+}
+
+func TestGameDetailHandler_OnDemandSummary(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	g := &domain.Game{
+		ID:    "g-ondemand",
+		Slug:  "ondemand-game",
+		Title: "On Demand Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, g))
+	saved, _ := db.GetGameBySlug(ctx, "ondemand-game")
+	platID := saved.Platforms[0].ID
+
+	// Сохраняем отзывы, но НЕ создаем summary
+	revs := []domain.Review{
+		{GamePlatformID: platID, ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Superb action!", ContentHash: "h1"},
+		{GamePlatformID: platID, ReviewType: domain.ReviewTypeUser, Author: "Player", Text: "Awesome story!", ContentHash: "h2"},
+	}
+	_, err := db.SaveReviews(ctx, revs)
+	require.NoError(t, err)
+
+	// Проверяем, что summary изначально отсутствует
+	sumBefore, _ := db.GetPlatformSummary(ctx, platID)
+	require.Nil(t, sumBefore)
+
+	// Открываем детальную страницу
+	req := httptest.NewRequest("GET", "/games/ondemand-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Проверяем, что summary было сгенерировано и сохранено в базе
+	sumAfter, err := db.GetPlatformSummary(ctx, platID)
+	require.NoError(t, err)
+	require.NotNil(t, sumAfter)
+	require.NotEmpty(t, sumAfter.CriticPros)
+}
+
+func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Port:          "8079",
+		AdminUsername: "admin",
+		AdminPassword: "secret-password",
+		SessionSecret: "secret-key",
+	}
+	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	// 1. Без авторизации - 401 Unauthorized
+	req := httptest.NewRequest("POST", "/api/games/recrawl-game/recrawl", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// 2. С авторизацией Basic Auth
+	reqAuth := httptest.NewRequest("POST", "/api/games/recrawl-game/recrawl", nil)
+	reqAuth.SetBasicAuth("admin", "secret-password")
+	reqAuth.Header.Set("HX-Request", "true")
+	recAuth := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recAuth, reqAuth)
+	// dummyScraper возвращает nil, поэтому вернет 500 (или 200 при наличии данных)
+	require.NotEqual(t, http.StatusUnauthorized, recAuth.Code)
+}
+

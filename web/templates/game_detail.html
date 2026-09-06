@@ -18,6 +18,17 @@
         rel="noopener"
         >▷ Смотреть трейлер &nearr;</a
       >{{end}}
+      {{if .IsAdmin}}
+      <button
+        class="button primary btn-action"
+        style="margin-top: 12px; width: 100%; justify-content: center; gap: 8px;"
+        hx-post="/api/games/{{.Game.Slug}}/recrawl"
+        hx-swap="none"
+        hx-disabled-elt="this"
+        onclick="this.innerText='🔄 Пересбор данных...'">
+        🔄 Пересобрать данные
+      </button>
+      {{end}}
     </div>
     <div class="detail-copy">
       <div class="eyebrow">Знакомство с игрой</div>
@@ -94,9 +105,13 @@
         <p class="muted" style="font-size: 13px">
           Анализа отзывов игроков пока нет.
         </p>
-        {{end}} {{else}}
+        {{end}} {{else if .Reviews}}
         <p class="body-copy">
-          Анализ отзывов пока не готов. Он появится после обработки игры.
+          Анализ отзывов формируется. Обновите страницу через пару секунд.
+        </p>
+        {{else}}
+        <p class="muted" style="font-size: 14px">
+          На Metacritic пока нет отзывов критиков и игроков для этой платформы.
         </p>
         {{end}}
       </article>

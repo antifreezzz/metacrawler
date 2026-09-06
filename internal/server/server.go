@@ -129,6 +129,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("POST /logout", s.handleLogout)
 	s.router.HandleFunc("GET /api/games", s.handleGamesList)
 	s.router.HandleFunc("GET /games/{slug}", s.handleGameDetail)
+	s.router.HandleFunc("POST /api/games/{slug}/recrawl", s.RequireAuth(s.handleGameRecrawl))
 
 	// Защищенные маршруты администрирования и управления сбором
 	s.router.HandleFunc("GET /monitoring", s.RequireAuth(s.handleMonitoring))
@@ -137,12 +138,71 @@ func (s *Server) routes() {
 	s.router.HandleFunc("GET /api/worker/events", s.RequireAuth(s.handleWorkerEvents))
 }
 
+type PaginationInfo struct {
+	CurrentPage int
+	TotalPages  int
+	TotalItems  int
+	PageSize    int
+	HasPrev     bool
+	HasNext     bool
+	PrevPage    int
+	NextPage    int
+	Pages       []int
+	StartItem   int
+	EndItem     int
+}
+
 type IndexPageData struct {
 	Filter      storage.ListFilter
 	Platforms   []string
 	Games       []domain.Game
 	CurrentPage string
+	Pagination  PaginationInfo
 	IsAdmin     bool
+}
+
+func buildPagination(currentPage, totalItems, pageSize int) PaginationInfo {
+	if pageSize <= 0 {
+		pageSize = 24
+	}
+	totalPages := (totalItems + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if currentPage < 1 {
+		currentPage = 1
+	} else if currentPage > totalPages {
+		currentPage = totalPages
+	}
+
+	startItem := (currentPage-1)*pageSize + 1
+	endItem := currentPage * pageSize
+	if endItem > totalItems {
+		endItem = totalItems
+	}
+	if totalItems == 0 {
+		startItem = 0
+		endItem = 0
+	}
+
+	var pages []int
+	for i := 1; i <= totalPages; i++ {
+		pages = append(pages, i)
+	}
+
+	return PaginationInfo{
+		CurrentPage: currentPage,
+		TotalPages:  totalPages,
+		TotalItems:  totalItems,
+		PageSize:    pageSize,
+		HasPrev:     currentPage > 1,
+		HasNext:     currentPage < totalPages,
+		PrevPage:    currentPage - 1,
+		NextPage:    currentPage + 1,
+		Pages:       pages,
+		StartItem:   startItem,
+		EndItem:     endItem,
+	}
 }
 
 func (s *Server) isAuthenticated(r *http.Request) bool {
@@ -206,15 +266,31 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+		page = p
+	}
+	const pageSize = 24
+
 	filter := storage.ListFilter{
 		Search:   r.URL.Query().Get("search"),
 		Platform: r.URL.Query().Get("platform"),
 		Sort:     r.URL.Query().Get("sort"),
-		Limit:    100,
+		Limit:    pageSize,
+		Offset:   (page - 1) * pageSize,
 	}
 	if filter.Sort == "" {
 		filter.Sort = "newest"
 	}
+
+	totalItems, err := s.db.CountGames(ctx, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	pagination := buildPagination(page, totalItems, pageSize)
+	filter.Offset = (pagination.CurrentPage - 1) * pageSize
 
 	games, err := s.db.ListGames(ctx, filter)
 	if err != nil {
@@ -233,6 +309,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Platforms:   platforms,
 		Games:       games,
 		CurrentPage: curPage,
+		Pagination:  pagination,
 		IsAdmin:     s.isAuthenticated(r),
 	}
 
@@ -245,15 +322,31 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+		page = p
+	}
+	const pageSize = 24
+
 	filter := storage.ListFilter{
 		Search:   r.URL.Query().Get("search"),
 		Platform: r.URL.Query().Get("platform"),
 		Sort:     r.URL.Query().Get("sort"),
-		Limit:    100,
+		Limit:    pageSize,
+		Offset:   (page - 1) * pageSize,
 	}
 	if filter.Sort == "" {
 		filter.Sort = "newest"
 	}
+
+	totalItems, err := s.db.CountGames(ctx, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	pagination := buildPagination(page, totalItems, pageSize)
+	filter.Offset = (pagination.CurrentPage - 1) * pageSize
 
 	games, err := s.db.ListGames(ctx, filter)
 	if err != nil {
@@ -262,9 +355,10 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := IndexPageData{
-		Filter:  filter,
-		Games:   games,
-		IsAdmin: s.isAuthenticated(r),
+		Filter:     filter,
+		Games:      games,
+		Pagination: pagination,
+		IsAdmin:    s.isAuthenticated(r),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -274,6 +368,31 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 	if err := s.listTemplate.ExecuteTemplate(w, "games_list", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleGameRecrawl(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	slug := r.PathValue("slug")
+	if slug == "" {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) >= 3 {
+			slug = parts[2]
+		}
+	}
+
+	savedGame, err := s.workerMgr.RecrawlGame(ctx, slug)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("recrawl error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	http.Redirect(w, r, "/games/"+savedGame.Slug, http.StatusFound)
 }
 
 type DetailPageData struct {
@@ -302,8 +421,32 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 	// Подтягиваем резюме отзывов для каждой платформы
 	for i := range game.Platforms {
 		summary, _ := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID)
+		reviews, _ := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
+		game.Platforms[i].Reviews = reviews
 		if summary != nil {
 			game.Platforms[i].Summary = summary
+		} else if len(reviews) > 0 {
+			// На лету генерируем резюме отзывов (с фоллбэком)
+			var critics, users []domain.Review
+			for _, r := range reviews {
+				if r.ReviewType == domain.ReviewTypeCritic {
+					critics = append(critics, r)
+				} else {
+					users = append(users, r)
+				}
+			}
+			sumRes, llmErr := s.llmClient.SummarizeReviews(ctx, game.Title, game.Platforms[i].Platform, critics, users)
+			if llmErr == nil && sumRes != nil {
+				newSum := &domain.PlatformSummary{
+					GamePlatformID: game.Platforms[i].ID,
+					CriticPros:     sumRes.CriticPros,
+					CriticCons:     sumRes.CriticCons,
+					UserPros:       sumRes.UserPros,
+					UserCons:       sumRes.UserCons,
+				}
+				_ = s.db.UpsertPlatformSummary(ctx, newSum)
+				game.Platforms[i].Summary = newSum
+			}
 		}
 	}
 
