@@ -23,6 +23,7 @@ type Config struct {
 	AdminUsername      string
 	AdminPassword      string
 	SessionSecret      string
+	WhisperURL         string
 	WhisperBinaryPath  string
 	WhisperModelPath   string
 	YouTubeCookiesPath string
@@ -50,6 +51,7 @@ func Load() *Config {
 		AdminUsername:      getEnv("ADMIN_USERNAME", "admin"),
 		AdminPassword:      getEnv("ADMIN_PASSWORD", ""),
 		SessionSecret:      getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
+		WhisperURL:         getEnv("WHISPER_URL", ""),
 		WhisperBinaryPath:  getEnv("WHISPER_BINARY_PATH", "/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli"),
 		WhisperModelPath:   getEnv("WHISPER_MODEL_PATH", "/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin"),
 		YouTubeCookiesPath: getEnv("YOUTUBE_COOKIES_PATH", ""),

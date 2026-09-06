@@ -1,6 +1,10 @@
 package youtube_test
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -131,4 +135,34 @@ main: processing audio done
 	cleaned := youtube.CleanWhisperOutput(raw)
 	require.Equal(t, "Hello everyone, welcome back to another gaming session! Today we are diving into Onimusha: Way of the Sword.", cleaned)
 }
+
+func TestTranscribeViaHTTP(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		err := r.ParseMultipartForm(10 << 20)
+		require.NoError(t, err)
+		file, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer file.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"text":"ggml_vulkan: ok\nHello from remote whisper STT server!"}`))
+	}))
+	defer mockServer.Close()
+
+	// Temporary dummy audio file
+	tmpFile, err := os.CreateTemp("", "test_audio_*.mp3")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString("fake-audio-content")
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	client := youtube.NewClientWithWhisperURL(nil, mockServer.URL, "", "", "")
+	text, err := client.TranscribeViaHTTP(context.Background(), tmpFile.Name())
+	require.NoError(t, err)
+	require.Equal(t, "Hello from remote whisper STT server!", text)
+}
+
 

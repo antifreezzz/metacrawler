@@ -43,7 +43,7 @@ func main() {
 		cfg.EmbeddingEngine, cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel,
 	)
 
-	ytClient := youtube.NewClientWithConfig(llmClient, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath)
+	ytClient := youtube.NewClientWithWhisperURL(llmClient, cfg.WhisperURL, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath)
 
 	workerMgr := worker.NewManager(db, scraperClient, llmClient, ytClient, cfg)
 

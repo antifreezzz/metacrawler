@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,11 +32,13 @@ type VideoInfo struct {
 	ChannelName string `json:"channel_name"`
 	ViewCount   int64  `json:"view_count"`
 	URL         string `json:"url"`
+	Duration    string `json:"duration"`
 }
 
 type Client struct {
 	httpClient        *http.Client
 	llmClient         *llm.Client
+	whisperURL        string
 	whisperBinaryPath string
 	whisperModelPath  string
 	cookiesPath       string
@@ -46,7 +49,11 @@ func NewClient(llmClient *llm.Client) *Client {
 }
 
 func NewClientWithConfig(llmClient *llm.Client, whisperBinary, whisperModel, cookiesPath string) *Client {
-	if whisperBinary == "" {
+	return NewClientWithWhisperURL(llmClient, "", whisperBinary, whisperModel, cookiesPath)
+}
+
+func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, whisperModel, cookiesPath string) *Client {
+	if whisperBinary == "" && whisperURL == "" {
 		for _, p := range []string{
 			"/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli",
 			"/usr/local/bin/whisper-cli",
@@ -59,7 +66,7 @@ func NewClientWithConfig(llmClient *llm.Client, whisperBinary, whisperModel, coo
 		}
 	}
 
-	if whisperModel == "" {
+	if whisperModel == "" && whisperURL == "" {
 		for _, p := range []string{
 			"/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin",
 			"/home/antifreezzz/whisper.cpp/models/ggml-base.bin",
@@ -75,9 +82,10 @@ func NewClientWithConfig(llmClient *llm.Client, whisperBinary, whisperModel, coo
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: 45 * time.Second,
 		},
 		llmClient:         llmClient,
+		whisperURL:        whisperURL,
 		whisperBinaryPath: whisperBinary,
 		whisperModelPath:  whisperModel,
 		cookiesPath:       cookiesPath,
@@ -656,14 +664,16 @@ func (c *Client) fetchViaWebPage(ctx context.Context, videoID string) (string, e
 }
 
 func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, error) {
-	if c.whisperBinaryPath == "" || c.whisperModelPath == "" {
-		return "", fmt.Errorf("whisper binary or model not configured")
-	}
-	if _, err := os.Stat(c.whisperBinaryPath); err != nil {
-		return "", fmt.Errorf("whisper binary not found at %s: %w", c.whisperBinaryPath, err)
-	}
-	if _, err := os.Stat(c.whisperModelPath); err != nil {
-		return "", fmt.Errorf("whisper model not found at %s: %w", c.whisperModelPath, err)
+	if c.whisperURL == "" {
+		if c.whisperBinaryPath == "" || c.whisperModelPath == "" {
+			return "", fmt.Errorf("whisper binary or model not configured")
+		}
+		if _, err := os.Stat(c.whisperBinaryPath); err != nil {
+			return "", fmt.Errorf("whisper binary not found at %s: %w", c.whisperBinaryPath, err)
+		}
+		if _, err := os.Stat(c.whisperModelPath); err != nil {
+			return "", fmt.Errorf("whisper model not found at %s: %w", c.whisperModelPath, err)
+		}
 	}
 
 	ytDlpPath := c.findYtDlp()
@@ -694,8 +704,12 @@ func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, e
 		return "", fmt.Errorf("audio file was not downloaded")
 	}
 
-	sttCtx, sttCancel := context.WithTimeout(ctx, 30*time.Second)
+	sttCtx, sttCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer sttCancel()
+
+	if c.whisperURL != "" {
+		return c.TranscribeViaHTTP(sttCtx, tmpAudio)
+	}
 
 	sttCmd := exec.CommandContext(sttCtx, c.whisperBinaryPath,
 		"-m", c.whisperModelPath,
@@ -711,6 +725,68 @@ func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, e
 	}
 
 	cleaned := CleanWhisperOutput(string(outBytes))
+	if len(cleaned) < 10 {
+		return "", fmt.Errorf("whisper produced no meaningful text")
+	}
+
+	return cleaned, nil
+}
+
+func (c *Client) TranscribeViaHTTP(ctx context.Context, audioPath string) (string, error) {
+	file, err := os.Open(audioPath)
+	if err != nil {
+		return "", fmt.Errorf("open audio file for STT: %w", err)
+	}
+	defer file.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", filepath.Base(audioPath))
+	if err != nil {
+		return "", fmt.Errorf("create multipart form file: %w", err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return "", fmt.Errorf("copy audio to multipart: %w", err)
+	}
+
+	_ = writer.WriteField("language", "auto")
+	_ = writer.WriteField("model", "whisper-1")
+
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.whisperURL, &body)
+	if err != nil {
+		return "", fmt.Errorf("create STT HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send STT request to %s: %w", c.whisperURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("STT request failed with status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var res struct {
+		Text  string `json:"text"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", fmt.Errorf("decode STT response: %w", err)
+	}
+
+	if res.Error != "" {
+		return "", fmt.Errorf("STT error: %s", res.Error)
+	}
+
+	cleaned := CleanWhisperOutput(res.Text)
 	if len(cleaned) < 10 {
 		return "", fmt.Errorf("whisper produced no meaningful text")
 	}
