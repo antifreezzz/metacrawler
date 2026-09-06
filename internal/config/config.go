@@ -31,7 +31,7 @@ type Config struct {
 func Load() *Config {
 	loadDotEnv(".env")
 
-	llmBaseURL := getEnv("LLM_BASE_URL", "https://api.openai.com/v1")
+	llmBaseURL := getEnv("LLM_BASE_URL", "http://localhost:8080/v1")
 	llmAPIKey := getEnv("LLM_API_KEY", "")
 
 	return &Config{
@@ -42,7 +42,7 @@ func Load() *Config {
 		CrawlDelayMaxMs:    getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
 		LLMBaseURL:         llmBaseURL,
 		LLMAPIKey:          llmAPIKey,
-		LLMModel:           getEnv("LLM_MODEL", "gpt-4o-mini"),
+		LLMModel:           getEnv("LLM_MODEL", "auto"),
 		EmbeddingEngine:    getEnv("EMBEDDING_ENGINE", "local"),
 		EmbeddingBaseURL:   getEnv("EMBEDDING_BASE_URL", llmBaseURL),
 		EmbeddingAPIKey:    getEnv("EMBEDDING_API_KEY", llmAPIKey),

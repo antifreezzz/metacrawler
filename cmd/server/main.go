@@ -77,8 +77,8 @@ func main() {
 	fmt.Printf("\n=======================================================\n")
 	fmt.Printf("🚀 METACRAWLER SERVICE STARTED ON http://localhost:%s\n", cfg.Port)
 	fmt.Printf("📦 Database: %s\n", cfg.DBPath)
-	fmt.Printf("⏰ Cron Schedule: %s\n", cfg.CronSchedule)
-	fmt.Printf("🤖 LLM Model: %s\n", cfg.LLMModel)
+	effectiveModel := llmClient.GetOrDiscoverModel(context.Background())
+	fmt.Printf("🤖 LLM Model: %s (Endpoint: %s)\n", effectiveModel, cfg.LLMBaseURL)
 	fmt.Printf("=======================================================\n\n")
 
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

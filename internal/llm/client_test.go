@@ -132,3 +132,54 @@ func TestGetEmbedding_Remote404Fallback(t *testing.T) {
 	require.Len(t, vec, 256, "Should gracefully fall back to Go vectorizer on 404")
 }
 
+func TestLlamaCpp_DynamicModelAndNoAPIKey(t *testing.T) {
+	requestedModel := ""
+	mockLlama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			// llama.cpp /models format
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"id": "/models/LiquidAI-LFM2.5-Q4_K_M.gguf"},
+				},
+			})
+		case "/v1/chat/completions":
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if m, ok := req["model"].(string); ok {
+				requestedModel = m
+			}
+			// Simulate markdown wrapped JSON and reasoning
+			resp := map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":              "assistant",
+							"content":           "```json\n{\"critic_pros\": \"Great!\", \"critic_cons\": \"None\", \"user_pros\": \"Cool\", \"user_cons\": \"None\"}\n```",
+							"reasoning_content": "Thinking about the game...",
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockLlama.Close()
+
+	// Empty apiKey and model="auto" on local endpoint
+	client := llm.NewClient(mockLlama.URL+"/v1", "", "auto", "local")
+	require.True(t, client.HasAPIKey(), "Local endpoint should be treated as active even without API key")
+
+	criticReviews := []domain.Review{{ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Awesome"}}
+	userReviews := []domain.Review{{ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Fun"}}
+
+	summary, err := client.SummarizeReviews(context.Background(), "Game X", "pc", criticReviews, userReviews)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	require.Equal(t, "Great!", summary.CriticPros)
+	require.Equal(t, "/models/LiquidAI-LFM2.5-Q4_K_M.gguf", requestedModel, "Should dynamically discover the loaded model from /models")
+}
+
+
