@@ -1,4 +1,4 @@
-.PHONY: all build test run docker-build docker-up clean
+.PHONY: all build test run docker-build docker-up deploy clean
 
 all: test build
 
