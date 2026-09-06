@@ -45,6 +45,7 @@ func TestParseGameDetails(t *testing.T) {
 	require.NotEmpty(t, game.CoverURL)
 	require.NotEmpty(t, game.Description)
 	require.NotEmpty(t, game.VideoURL)
+	require.Equal(t, "2022-02-25", game.ReleaseDate)
 
 	// Проверка платформ
 	require.NotEmpty(t, game.Platforms)
@@ -83,4 +84,13 @@ func TestParseGameDetails(t *testing.T) {
 		}
 	}
 	require.True(t, hasCritic || hasUser, "should have parsed reviews")
+}
+
+func TestNormalizeReleaseDate(t *testing.T) {
+	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("2022-02-25"))
+	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("2022-02-25T00:00:00.000Z"))
+	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("Feb 25, 2022"))
+	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("February 25, 2022"))
+	require.Equal(t, "2024-01-05", scraper.NormalizeReleaseDate("5 Jan 2024"))
+	require.Equal(t, "", scraper.NormalizeReleaseDate(""))
 }

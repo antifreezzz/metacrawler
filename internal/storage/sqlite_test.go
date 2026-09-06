@@ -283,6 +283,33 @@ func TestListGames_FilterSearchSort(t *testing.T) {
 	require.Equal(t, "Elden Ring", games[0].Title) // 95 идет первым
 }
 
+func TestListGames_ReleaseDateSorting(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	// Добавляем игры с разными датами выпуска
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-old", Slug: "old-game", Title: "Old Game", ReleaseDate: "2020-01-15",
+	})
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-new", Slug: "new-game", Title: "New Game", ReleaseDate: "2024-05-20",
+	})
+	_ = db.UpsertGame(ctx, &domain.Game{
+		ID: "g-mid", Slug: "mid-game", Title: "Mid Game", ReleaseDate: "2022-11-10",
+	})
+
+	// Сортировка newest должна вернуть: New Game (2024), Mid Game (2022), Old Game (2020)
+	games, err := db.ListGames(ctx, storage.ListFilter{Sort: "newest"})
+	require.NoError(t, err)
+	require.Len(t, games, 3)
+	require.Equal(t, "New Game", games[0].Title)
+	require.Equal(t, "2024-05-20", games[0].ReleaseDate)
+	require.Equal(t, "Mid Game", games[1].Title)
+	require.Equal(t, "2022-11-10", games[1].ReleaseDate)
+	require.Equal(t, "Old Game", games[2].Title)
+	require.Equal(t, "2020-01-15", games[2].ReleaseDate)
+}
+
 func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

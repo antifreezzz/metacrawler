@@ -32,6 +32,7 @@ type Game struct {
 	Developer   string         `json:"developer"`
 	Description string         `json:"description"`
 	VideoURL    string         `json:"video_url"`
+	ReleaseDate string         `json:"release_date"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	Platforms   []GamePlatform `json:"platforms,omitempty"`

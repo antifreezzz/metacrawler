@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/tidwall/gjson"
@@ -158,6 +159,13 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 				}
 				game.VideoURL = strings.TrimSpace(video)
 			}
+			if game.ReleaseDate == "" {
+				relDate := parsed.Get("datePublished").String()
+				if relDate == "" {
+					relDate = parsed.Get("dateCreated").String()
+				}
+				game.ReleaseDate = NormalizeReleaseDate(relDate)
+			}
 		}
 	})
 
@@ -186,6 +194,11 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 		trailerEl := doc.Find("[data-testid='featured-trailer'] video, [data-testid='featured-trailer'] iframe")
 		videoSrc, _ := trailerEl.Attr("src")
 		game.VideoURL = videoSrc
+	}
+	if game.ReleaseDate == "" {
+		dateText := doc.Find(".hero-release-date__value, [data-testid='hero-release-date'] .hero-release-date__value, .hero-release-date, .product-hero__release-date").First().Text()
+		dateText = strings.TrimPrefix(strings.TrimSpace(dateText), "Released On:")
+		game.ReleaseDate = NormalizeReleaseDate(strings.TrimSpace(dateText))
 	}
 
 	// 3. Извлечение Userscore для игры / дефолтной платформы
@@ -331,4 +344,41 @@ func normalizePlatformName(raw string) string {
 	default:
 		return strings.ReplaceAll(raw, " ", "-")
 	}
+}
+
+// NormalizeReleaseDate приводит строки дат ("2022-02-25", "Feb 25, 2022", "February 25, 2022", "2022-02-25T00:00:00.000Z") к формату "YYYY-MM-DD".
+func NormalizeReleaseDate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	// Если уже в формате YYYY-MM-DD или ISO timestamp
+	if len(raw) >= 10 {
+		prefix := raw[:10]
+		if _, err := time.Parse("2006-01-02", prefix); err == nil {
+			return prefix
+		}
+	}
+
+	formats := []string{
+		"Jan 2, 2006",
+		"January 2, 2006",
+		"Jan 02, 2006",
+		"January 02, 2006",
+		"02 Jan 2006",
+		"2 Jan 2006",
+		"02 January 2006",
+		"2 January 2006",
+		"2006-01-02",
+		time.RFC3339,
+	}
+
+	for _, layout := range formats {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+
+	return raw
 }

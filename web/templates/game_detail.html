@@ -22,10 +22,10 @@
     <div class="detail-copy">
       <div class="eyebrow">Знакомство с игрой</div>
       <h1>{{.Game.Title}}</h1>
-      <p class="muted">
-        {{if .Game.Developer}}{{.Game.Developer}}{{else}}Разработчик не
-        указан{{end}}
-      </p>
+      <div class="muted detail-submeta">
+        <span>{{if .Game.Developer}}{{.Game.Developer}}{{else}}Разработчик не указан{{end}}</span>
+        {{if .Game.ReleaseDate}}<span class="meta-dot">·</span><span>Дата выхода: <strong style="color: var(--fg); font-weight: 500;">{{formatReleaseDate .Game.ReleaseDate}}</strong></span>{{end}}
+      </div>
       {{if .Game.Description}}
       <p class="body-copy">{{.Game.Description}}</p>
       {{end}}
@@ -110,7 +110,7 @@
   {{if .YouTube}}
   <section class="panel">
     <div class="section-heading">
-      <h2>Игра глазами автора</h2>
+      <h2>Игра глазами блогера</h2>
       {{if .YouTube.ViewCount}}<span class="muted" style="font-size: 12px"
         >{{.YouTube.ViewCount}} просмотров</span
       >{{end}}

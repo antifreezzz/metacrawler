@@ -76,6 +76,7 @@ func (d *DB) migrate() error {
 		developer TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
 		video_url TEXT NOT NULL DEFAULT '',
+		release_date TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
@@ -151,8 +152,29 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_crawl_history_lookup ON crawl_history(slug, date_str);
 	CREATE INDEX IF NOT EXISTS idx_game_platforms_game_id ON game_platforms(game_id);
 	`
-	_, err := d.db.Exec(ddl)
-	return err
+	if _, err := d.db.Exec(ddl); err != nil {
+		return err
+	}
+
+	// Миграция существующей БД: добавляем колонку release_date, если её нет
+	var colCount int
+	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('games') WHERE name = 'release_date'`).Scan(&colCount)
+	if colCount == 0 {
+		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// Очистка ошибочно прикрепленных нерелевантных видео и шаблонных заглушек из прошлых запусков
+	_, _ = d.db.Exec(`
+		DELETE FROM youtube_analyses
+		WHERE summary LIKE '%исследует ключевые механики, боевую систему%'
+		   OR game_id IN (
+			SELECT g.id FROM games g
+			WHERE (g.slug = 'ant-simulator-stock-market-game' AND LOWER(video_title) LIKE '%pocket ants%')
+			   OR (g.slug = 'escape-from-company' AND LOWER(video_title) LIKE '%star wars%')
+		);
+	`)
+
+	return nil
 }
 
 func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
@@ -173,19 +195,20 @@ func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
 
 	// 1. Upsert game
 	queryGame := `
-	INSERT INTO games (id, slug, title, cover_url, developer, description, video_url, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO games (id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(slug) DO UPDATE SET
 		title = excluded.title,
 		cover_url = CASE WHEN excluded.cover_url != '' THEN excluded.cover_url ELSE games.cover_url END,
 		developer = CASE WHEN excluded.developer != '' THEN excluded.developer ELSE games.developer END,
 		description = CASE WHEN excluded.description != '' THEN excluded.description ELSE games.description END,
 		video_url = CASE WHEN excluded.video_url != '' THEN excluded.video_url ELSE games.video_url END,
+		release_date = CASE WHEN excluded.release_date != '' THEN excluded.release_date ELSE games.release_date END,
 		updated_at = excluded.updated_at
 	RETURNING id;
 	`
 	err = tx.QueryRowContext(ctx, queryGame,
-		game.ID, game.Slug, game.Title, game.CoverURL, game.Developer, game.Description, game.VideoURL, game.CreatedAt, game.UpdatedAt,
+		game.ID, game.Slug, game.Title, game.CoverURL, game.Developer, game.Description, game.VideoURL, game.ReleaseDate, game.CreatedAt, game.UpdatedAt,
 	).Scan(&game.ID)
 	if err != nil {
 		return fmt.Errorf("upsert game row: %w", err)
@@ -220,12 +243,12 @@ func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
 
 func (d *DB) GetGameBySlug(ctx context.Context, slug string) (*domain.Game, error) {
 	query := `
-	SELECT id, slug, title, cover_url, developer, description, video_url, created_at, updated_at
+	SELECT id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at
 	FROM games WHERE slug = ?;
 	`
 	var game domain.Game
 	err := d.db.QueryRowContext(ctx, query, slug).Scan(
-		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.CreatedAt, &game.UpdatedAt,
+		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -245,12 +268,12 @@ func (d *DB) GetGameBySlug(ctx context.Context, slug string) (*domain.Game, erro
 
 func (d *DB) GetGameByID(ctx context.Context, id string) (*domain.Game, error) {
 	query := `
-	SELECT id, slug, title, cover_url, developer, description, video_url, created_at, updated_at
+	SELECT id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at
 	FROM games WHERE id = ?;
 	`
 	var game domain.Game
 	err := d.db.QueryRowContext(ctx, query, id).Scan(
-		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.CreatedAt, &game.UpdatedAt,
+		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -271,7 +294,7 @@ func (d *DB) GetGameByID(ctx context.Context, id string) (*domain.Game, error) {
 type ListFilter struct {
 	Search   string
 	Platform string
-	Sort     string // metascore_desc, userscore_desc, newest
+	Sort     string // metascore_desc, userscore_desc, newest, title_asc
 	Limit    int
 	Offset   int
 }
@@ -294,20 +317,20 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 		args = append(args, strings.ToLower(strings.TrimSpace(filter.Platform)))
 	}
 
-	orderClause := "g.created_at DESC"
+	orderClause := "CASE WHEN g.release_date != '' THEN g.release_date ELSE '1970-01-01' END DESC, g.created_at DESC"
 	switch filter.Sort {
 	case "metascore_desc":
 		orderClause = "(SELECT MAX(gp.metascore) FROM game_platforms gp WHERE gp.game_id = g.id) DESC NULLS LAST"
 	case "userscore_desc":
 		orderClause = "(SELECT MAX(gp.userscore) FROM game_platforms gp WHERE gp.game_id = g.id) DESC NULLS LAST"
 	case "title_asc":
-		orderClause = "g.title ASC"
+		orderClause = "g.title COLLATE NOCASE ASC"
 	case "newest":
-		orderClause = "g.created_at DESC"
+		orderClause = "CASE WHEN g.release_date != '' THEN g.release_date ELSE '1970-01-01' END DESC, g.created_at DESC"
 	}
 
 	query := fmt.Sprintf(`
-		SELECT g.id, g.slug, g.title, g.cover_url, g.developer, g.description, g.video_url, g.created_at, g.updated_at
+		SELECT g.id, g.slug, g.title, g.cover_url, g.developer, g.description, g.video_url, g.release_date, g.created_at, g.updated_at
 		FROM games g
 		WHERE %s
 		ORDER BY %s
@@ -325,7 +348,7 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 	var games []domain.Game
 	for rows.Next() {
 		var g domain.Game
-		if err := rows.Scan(&g.ID, &g.Slug, &g.Title, &g.CoverURL, &g.Developer, &g.Description, &g.VideoURL, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Slug, &g.Title, &g.CoverURL, &g.Developer, &g.Description, &g.VideoURL, &g.ReleaseDate, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
 		games = append(games, g)
@@ -603,6 +626,12 @@ func (d *DB) GetYouTubeAnalysis(ctx context.Context, gameID string) (*domain.You
 		return nil, err
 	}
 	return &y, nil
+}
+
+func (d *DB) DeleteYouTubeAnalysis(ctx context.Context, gameID string) error {
+	query := `DELETE FROM youtube_analyses WHERE game_id = ?;`
+	_, err := d.db.ExecContext(ctx, query, gameID)
+	return err
 }
 
 func encodeVector(vec []float32) []byte {

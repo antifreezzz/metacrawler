@@ -63,9 +63,10 @@
     </div>
     <div class="card-body">
       <h2 class="card-title">{{.Title}}</h2>
-      <p class="card-developer">
-        {{if .Developer}}{{.Developer}}{{else}}Разработчик не указан{{end}}
-      </p>
+      <div class="card-meta">
+        <span class="card-developer">{{if .Developer}}{{.Developer}}{{else}}Разработчик не указан{{end}}</span>
+        {{if .ReleaseDate}}<span class="card-date">{{formatReleaseDate .ReleaseDate}}</span>{{end}}
+      </div>
       <div class="platforms">
         {{range .Platforms}}
         <div class="platform-row">
