@@ -422,8 +422,39 @@
       .card-developer {
         font-size: 12px;
         color: var(--muted);
-        margin-top: 5px;
-        margin-bottom: 18px;
+      }
+      .card-meta {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 6px;
+        margin-bottom: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .card-date {
+        color: var(--accent);
+        background: rgba(85, 203, 142, 0.08);
+        border: 1px solid rgba(85, 203, 142, 0.2);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .meta-dot {
+        opacity: 0.5;
+      }
+      .detail-submeta {
+        margin-top: 8px;
+        margin-bottom: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
       }
       .platforms {
         display: grid;
@@ -1038,7 +1069,7 @@
       }
     </style>
   </head>
-  <body hx-ext="sse" sse-connect="/api/worker/events">
+  <body {{if .IsAdmin}}hx-ext="sse" sse-connect="/api/worker/events"{{end}}>
     <a class="skip-link" href="#main">Перейти к содержимому</a>
     <header class="topbar">
       <div class="shell header-row">
@@ -1059,6 +1090,7 @@
           <a href="/">Каталог игр</a><a href="/monitoring">Мониторинг</a>
         </nav>
         <div class="header-actions">
+          {{if .IsAdmin}}
           <div id="worker-status-badge" sse-swap="status" class="status">
             <span class="dot"></span><span>Подключение…</span>
           </div>
@@ -1077,6 +1109,10 @@
               <path d="m13 3-9 11h7l-1 7 10-12h-7z" /></svg
             >Запустить сбор
           </button>
+          <a href="/logout" class="button" style="min-height: 44px; padding: 8px 14px; font-size: 13px;">Выйти</a>
+          {{else}}
+          <a href="/login" class="button" style="min-height: 44px; padding: 8px 16px; font-size: 13px;">Войти</a>
+          {{end}}
         </div>
       </div>
     </header>

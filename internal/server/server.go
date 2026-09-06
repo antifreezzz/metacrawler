@@ -24,11 +24,13 @@ type Server struct {
 	workerMgr          *worker.Manager
 	llmClient          *llm.Client
 	cfg                *config.Config
+	auth               *AuthManager
 	router             *http.ServeMux
 	indexTemplate      *template.Template
 	detailTemplate     *template.Template
 	listTemplate       *template.Template
 	monitoringTemplate *template.Template
+	loginTemplate      *template.Template
 }
 
 func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *config.Config) *Server {
@@ -37,6 +39,7 @@ func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *
 		workerMgr: workerMgr,
 		llmClient: llmClient,
 		cfg:       cfg,
+		auth:      NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret),
 		router:    http.NewServeMux(),
 	}
 
@@ -84,6 +87,24 @@ func (s *Server) loadTemplates() {
 			}
 			return fmt.Sprintf("%.1f", *score)
 		},
+		"formatReleaseDate": func(dateStr string) string {
+			if dateStr == "" {
+				return ""
+			}
+			t, err := time.Parse("2006-01-02", dateStr)
+			if err != nil {
+				return dateStr
+			}
+			months := []string{
+				"", "янв", "фев", "мар", "апр", "май", "июн",
+				"июл", "авг", "сен", "окт", "ноя", "дек",
+			}
+			m := int(t.Month())
+			if m >= 1 && m <= 12 {
+				return fmt.Sprintf("%d %s %d", t.Day(), months[m], t.Year())
+			}
+			return t.Format("02.01.2006")
+		},
 	}
 
 	layout := filepath.Join(tmplDir, "layout.html")
@@ -91,21 +112,29 @@ func (s *Server) loadTemplates() {
 	gamesList := filepath.Join(tmplDir, "games_list.html")
 	detail := filepath.Join(tmplDir, "game_detail.html")
 	monitoring := filepath.Join(tmplDir, "monitoring.html")
+	login := filepath.Join(tmplDir, "login.html")
 
 	s.indexTemplate = template.Must(template.New("layout.html").Funcs(funcMap).ParseFiles(layout, index, gamesList))
 	s.detailTemplate = template.Must(template.New("layout.html").Funcs(funcMap).ParseFiles(layout, detail))
 	s.listTemplate = template.Must(template.New("games_list.html").Funcs(funcMap).ParseFiles(gamesList))
 	s.monitoringTemplate = template.Must(template.New("layout.html").Funcs(funcMap).ParseFiles(layout, monitoring))
+	s.loginTemplate = template.Must(template.New("layout.html").Funcs(funcMap).ParseFiles(layout, login))
 }
 
 func (s *Server) routes() {
 	s.router.HandleFunc("GET /", s.handleIndex)
-	s.router.HandleFunc("GET /monitoring", s.handleMonitoring)
+	s.router.HandleFunc("GET /login", s.handleLoginPage)
+	s.router.HandleFunc("POST /login", s.handleLoginSubmit)
+	s.router.HandleFunc("GET /logout", s.handleLogout)
+	s.router.HandleFunc("POST /logout", s.handleLogout)
 	s.router.HandleFunc("GET /api/games", s.handleGamesList)
 	s.router.HandleFunc("GET /games/{slug}", s.handleGameDetail)
-	s.router.HandleFunc("POST /api/worker/run", s.handleWorkerRun)
-	s.router.HandleFunc("GET /api/worker/status", s.handleWorkerStatus)
-	s.router.HandleFunc("GET /api/worker/events", s.handleWorkerEvents)
+
+	// Защищенные маршруты администрирования и управления сбором
+	s.router.HandleFunc("GET /monitoring", s.RequireAuth(s.handleMonitoring))
+	s.router.HandleFunc("POST /api/worker/run", s.RequireAuth(s.handleWorkerRun))
+	s.router.HandleFunc("GET /api/worker/status", s.RequireAuth(s.handleWorkerStatus))
+	s.router.HandleFunc("GET /api/worker/events", s.RequireAuth(s.handleWorkerEvents))
 }
 
 type IndexPageData struct {
@@ -113,6 +142,65 @@ type IndexPageData struct {
 	Platforms   []string
 	Games       []domain.Game
 	CurrentPage string
+	IsAdmin     bool
+}
+
+func (s *Server) isAuthenticated(r *http.Request) bool {
+	return s.auth.ValidateRequest(r)
+}
+
+type LoginPageData struct {
+	Username string
+	Next     string
+	Error    string
+	IsAdmin  bool
+}
+
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if s.isAuthenticated(r) {
+		http.Redirect(w, r, "/monitoring", http.StatusFound)
+		return
+	}
+	next := r.URL.Query().Get("next")
+	if next == "" {
+		next = "/monitoring"
+	}
+	data := LoginPageData{
+		Next: next,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = s.loginTemplate.ExecuteTemplate(w, "layout.html", data)
+}
+
+func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	next := r.FormValue("next")
+	if next == "" {
+		next = "/monitoring"
+	}
+
+	if !s.auth.Authenticate(username, password) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		data := LoginPageData{
+			Username: username,
+			Next:     next,
+			Error:    "Неверное имя пользователя или пароль",
+		}
+		_ = s.loginTemplate.ExecuteTemplate(w, "layout.html", data)
+		return
+	}
+
+	cookie := s.auth.GenerateSessionCookie(username)
+	http.SetCookie(w, cookie)
+	http.Redirect(w, r, next, http.StatusFound)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, s.auth.ClearSessionCookie())
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +233,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Platforms:   platforms,
 		Games:       games,
 		CurrentPage: curPage,
+		IsAdmin:     s.isAuthenticated(r),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -173,8 +262,9 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := IndexPageData{
-		Filter: filter,
-		Games:  games,
+		Filter:  filter,
+		Games:   games,
+		IsAdmin: s.isAuthenticated(r),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -190,6 +280,7 @@ type DetailPageData struct {
 	Game         *domain.Game
 	SimilarGames []domain.Game
 	YouTube      *domain.YouTubeAnalysis
+	IsAdmin      bool
 }
 
 func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +335,7 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		Game:         game,
 		SimilarGames: similarGames,
 		YouTube:      ytAnalysis,
+		IsAdmin:      s.isAuthenticated(r),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -253,12 +345,16 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 type MonitoringPageData struct {
-	Status worker.StatusInfo
+	Status  worker.StatusInfo
+	IsAdmin bool
 }
 
 func (s *Server) handleMonitoring(w http.ResponseWriter, r *http.Request) {
 	status := s.workerMgr.GetStatus()
-	data := MonitoringPageData{Status: status}
+	data := MonitoringPageData{
+		Status:  status,
+		IsAdmin: true,
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.monitoringTemplate.ExecuteTemplate(w, "layout.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

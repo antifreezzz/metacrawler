@@ -1,0 +1,43 @@
+{{define "title"}}Вход администратора — Metacrawler{{end}}
+
+{{define "content"}}
+<div class="hero" style="max-width: 460px; margin: 40px auto 20px;">
+  <div>
+    <div class="eyebrow">Доступ к управлению</div>
+    <h1>Авторизация</h1>
+    <p class="intro">
+      Войдите под учетной записью администратора для доступа к мониторингу и управлению сбором данных.
+    </p>
+  </div>
+</div>
+
+<div style="max-width: 460px; margin: 0 auto;">
+  {{if .Error}}
+  <div class="toast error" style="position: static; margin-bottom: 20px; box-shadow: none;">
+    {{.Error}}
+  </div>
+  {{end}}
+
+  <form method="POST" action="/login" class="panel stack" style="gap: 18px;">
+    <input type="hidden" name="next" value="{{.Next}}" />
+    
+    <label class="field" for="username">
+      <span>ИМЯ ПОЛЬЗОВАТЕЛЯ</span>
+      <input id="username" class="control" type="text" name="username" value="{{.Username}}" required autofocus autocomplete="username" />
+    </label>
+
+    <label class="field" for="password">
+      <span>ПАРОЛЬ</span>
+      <input id="password" class="control" type="password" name="password" required autocomplete="current-password" />
+    </label>
+
+    <button type="submit" class="button primary" style="width: 100%; margin-top: 8px;">
+      Войти в панель управления &rarr;
+    </button>
+  </form>
+
+  <div style="text-align: center; margin-top: 24px;">
+    <a href="/" class="back" style="margin-bottom: 0;">&larr; Вернуться в каталог</a>
+  </div>
+</div>
+{{end}}

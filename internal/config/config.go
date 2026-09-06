@@ -13,25 +13,46 @@ type Config struct {
 	CronSchedule    string
 	CrawlDelayMinMs int
 	CrawlDelayMaxMs int
-	LLMBaseURL      string
-	LLMAPIKey       string
-	LLMModel        string
-	EmbeddingModel  string
+	LLMBaseURL         string
+	LLMAPIKey          string
+	LLMModel           string
+	EmbeddingEngine    string // "local" (default) or "remote"
+	EmbeddingBaseURL   string
+	EmbeddingAPIKey    string
+	EmbeddingModel     string
+	AdminUsername      string
+	AdminPassword      string
+	SessionSecret      string
+	WhisperBinaryPath  string
+	WhisperModelPath   string
+	YouTubeCookiesPath string
 }
 
 func Load() *Config {
 	loadDotEnv(".env")
 
+	llmBaseURL := getEnv("LLM_BASE_URL", "https://api.openai.com/v1")
+	llmAPIKey := getEnv("LLM_API_KEY", "")
+
 	return &Config{
-		Port:            getEnv("PORT", "8079"),
-		DBPath:          getEnv("DB_PATH", "data/metacrawler.db"),
-		CronSchedule:    getEnv("CRON_SCHEDULE", "0 * * * *"),
-		CrawlDelayMinMs: getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
-		CrawlDelayMaxMs: getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
-		LLMBaseURL:      getEnv("LLM_BASE_URL", "https://api.openai.com/v1"),
-		LLMAPIKey:       getEnv("LLM_API_KEY", ""),
-		LLMModel:        getEnv("LLM_MODEL", "gpt-4o-mini"),
-		EmbeddingModel:  getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
+		Port:               getEnv("PORT", "8079"),
+		DBPath:             getEnv("DB_PATH", "data/metacrawler.db"),
+		CronSchedule:       getEnv("CRON_SCHEDULE", "0 * * * *"),
+		CrawlDelayMinMs:    getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
+		CrawlDelayMaxMs:    getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
+		LLMBaseURL:         llmBaseURL,
+		LLMAPIKey:          llmAPIKey,
+		LLMModel:           getEnv("LLM_MODEL", "gpt-4o-mini"),
+		EmbeddingEngine:    getEnv("EMBEDDING_ENGINE", "local"),
+		EmbeddingBaseURL:   getEnv("EMBEDDING_BASE_URL", llmBaseURL),
+		EmbeddingAPIKey:    getEnv("EMBEDDING_API_KEY", llmAPIKey),
+		EmbeddingModel:     getEnv("EMBEDDING_MODEL", "local"),
+		AdminUsername:      getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword:      getEnv("ADMIN_PASSWORD", ""),
+		SessionSecret:      getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
+		WhisperBinaryPath:  getEnv("WHISPER_BINARY_PATH", "/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli"),
+		WhisperModelPath:   getEnv("WHISPER_MODEL_PATH", "/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin"),
+		YouTubeCookiesPath: getEnv("YOUTUBE_COOKIES_PATH", ""),
 	}
 }
 

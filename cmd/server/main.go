@@ -38,9 +38,12 @@ func main() {
 		log.Fatalf("failed to initialize scraper client: %v", err)
 	}
 
-	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.EmbeddingModel)
+	llmClient := llm.NewClientWithEmbedding(
+		cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel,
+		cfg.EmbeddingEngine, cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel,
+	)
 
-	ytClient := youtube.NewClient(llmClient)
+	ytClient := youtube.NewClientWithConfig(llmClient, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath)
 
 	workerMgr := worker.NewManager(db, scraperClient, llmClient, ytClient, cfg)
 
