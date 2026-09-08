@@ -100,6 +100,49 @@ func TestIndexHandler_Returns200(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "Elden Ring")
 }
 
+func TestIndexHandler_OpenGraphDefaults(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, `<meta property="og:title"`)
+	require.Contains(t, body, `<meta property="og:site_name" content="Metacrawler" />`)
+	require.Contains(t, body, `rel="icon"`)
+}
+
+func TestGameDetailHandler_OpenGraphTags(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-og",
+		Slug:        "og-game",
+		Title:       "OG Game",
+		Description: "Description with \"quotes\" & symbols",
+		CoverURL:    "https://example.com/cover.jpg",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	req := httptest.NewRequest("GET", "/games/og-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, `<meta property="og:title" content="OG Game — Metacrawler" />`)
+	require.Contains(t, body, `<meta property="og:description" content="Description with &#34;quotes&#34; &amp; symbols" />`)
+	require.Contains(t, body, `<meta property="og:image" content="https://example.com/cover.jpg" />`)
+	require.Contains(t, body, `<meta property="og:url" content="http://example.com/games/og-game" />`)
+	require.Contains(t, body, `<meta name="twitter:card" content="summary_large_image" />`)
+}
+
 func TestGameListPartial_FiltersResults(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()

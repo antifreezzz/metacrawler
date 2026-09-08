@@ -1,4 +1,9 @@
-{{define "title"}}{{.Game.Title}} — Metacrawler{{end}} {{define "content"}}
+{{define "title"}}{{.Game.Title}} — Metacrawler{{end}}
+{{define "og-title"}}<meta property="og:title" content="{{.Game.Title}} — Metacrawler" />{{end}}
+{{define "og-description"}}<meta property="og:description" content="{{.Game.Description}}" />{{end}}
+{{define "og-image"}}{{if .Game.CoverURL}}<meta property="og:image" content="{{.Game.CoverURL}}" />{{end}}{{end}}
+{{define "og-url"}}<meta property="og:url" content="{{.OGBaseURL}}/games/{{.Game.Slug}}" />{{end}}
+{{define "content"}}
 <a class="back" href="/">&larr; Назад в каталог</a>
 <div class="stack">
   <section class="detail-hero">

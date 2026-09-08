@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111513" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23c4f078'/%3E%3Cpath d='M4 17V7l5 6 3-6 3 6 5-6v10' stroke='%23182014' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
     <title>{{block "title" .}}Metacrawler{{end}}</title>
+    <meta property="og:site_name" content="Metacrawler" />
+    <meta property="og:type" content="website" />
+    {{block "og-title" .}}<meta property="og:title" content="Metacrawler — игры, оценки и впечатления" />{{end}}
+    {{block "og-description" .}}<meta property="og:description" content="Каталог видеоигр с Metacritic: оценки, отзывы и ИИ-анализ впечатлений." />{{end}}
+    {{block "og-image" .}}{{end}}
+    {{block "og-url" .}}{{end}}
+    <meta name="twitter:card" content="summary_large_image" />
     <script src="https://unpkg.com/htmx.org@2.0.10"></script>
     <script src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
     <style>

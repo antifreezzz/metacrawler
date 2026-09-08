@@ -418,6 +418,18 @@ type DetailPageData struct {
 	SimilarGames []domain.Game
 	YouTube      *domain.YouTubeAnalysis
 	IsAdmin      bool
+	OGBaseURL    string
+}
+
+// schemeFromRequest определяет схему публичного URL (с учетом обратного прокси).
+func schemeFromRequest(r *http.Request) string {
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		return p
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +509,7 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		SimilarGames: similarGames,
 		YouTube:      ytAnalysis,
 		IsAdmin:      s.isAuthenticated(r),
+		OGBaseURL:    schemeFromRequest(r) + "://" + r.Host,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
