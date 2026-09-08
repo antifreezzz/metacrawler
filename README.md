@@ -63,11 +63,13 @@ cp .env.example .env
 
 Параметры:
 ```ini
+```ini
 PORT=8079
 DB_PATH=data/metacrawler.db
 CRON_SCHEDULE=0 * * * *
 CRAWL_DELAY_MIN_MS=2000
 CRAWL_DELAY_MAX_MS=4000
+LLM_TIMEOUT_SECONDS=120
 
 # OpenAI-совместимый API (опционально, при отсутствии ключа работает fallback)
 LLM_BASE_URL=https://api.openai.com/v1

@@ -81,6 +81,13 @@ func NewClientWithEmbedding(baseURL, apiKey, chatModel, embeddingEngine, embeddi
 	}
 }
 
+// SetTimeout переопределяет таймаут HTTP-запросов к LLM.
+func (c *Client) SetTimeout(d time.Duration) {
+	if c.httpClient != nil {
+		c.httpClient.Timeout = d
+	}
+}
+
 // HasAPIKey возвращает true, если клиент готов отправлять запросы в LLM
 // (указан API-ключ либо используется локальный эндпоинт вроде llamacpp/ollama).
 func (c *Client) HasAPIKey() bool {

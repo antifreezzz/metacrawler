@@ -42,6 +42,9 @@ func main() {
 		cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel,
 		cfg.EmbeddingEngine, cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel,
 	)
+	if cfg.LLMTimeoutSeconds > 0 {
+		llmClient.SetTimeout(time.Duration(cfg.LLMTimeoutSeconds) * time.Second)
+	}
 
 	ytClient := youtube.NewClientWithWhisperURL(llmClient, cfg.WhisperURL, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath)
 

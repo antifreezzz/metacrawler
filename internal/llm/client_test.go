@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"metacrawler/internal/domain"
@@ -94,6 +95,28 @@ func TestSummarizeReviews_Mock(t *testing.T) {
 	require.Equal(t, expectedSummary.CriticCons, res.CriticCons)
 	require.Equal(t, expectedSummary.UserPros, res.UserPros)
 	require.Equal(t, expectedSummary.UserCons, res.UserCons)
+}
+
+func TestSummarizeReviews_RespectsConfiguredTimeout(t *testing.T) {
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer slowServer.Close()
+
+	client := llm.NewClient(slowServer.URL+"/v1", "test-key", "gpt-4o", "local")
+	client.SetTimeout(200 * time.Millisecond)
+
+	start := time.Now()
+	_, err := client.SummarizeReviews(context.Background(), "Game", "pc",
+		[]domain.Review{{ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Good."}},
+		[]domain.Review{{ReviewType: domain.ReviewTypeUser, Author: "P", Text: "Fun."}})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, llm.ErrLLMUnavailable)
+	require.Less(t, elapsed, 1500*time.Millisecond,
+		"таймаут должен применяться из конфигурации, а не дефолтные 45с (elapsed=%v)", elapsed)
 }
 
 func TestGetEmbedding_Mock(t *testing.T) {

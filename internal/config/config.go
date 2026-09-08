@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	Port            string
-	DBPath          string
-	CronSchedule    string
-	CrawlDelayMinMs int
-	CrawlDelayMaxMs int
+	Port               string
+	DBPath             string
+	CronSchedule       string
+	CrawlDelayMinMs    int
+	CrawlDelayMaxMs    int
+	LLMTimeoutSeconds  int // таймаут запросов к LLM; локальные модели могут думать дольше дефолта
 	LLMBaseURL         string
 	LLMAPIKey          string
 	LLMModel           string
@@ -41,6 +42,7 @@ func Load() *Config {
 		CronSchedule:       getEnv("CRON_SCHEDULE", "0 * * * *"),
 		CrawlDelayMinMs:    getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
 		CrawlDelayMaxMs:    getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
+		LLMTimeoutSeconds:  getEnvAsInt("LLM_TIMEOUT_SECONDS", 45),
 		LLMBaseURL:         llmBaseURL,
 		LLMAPIKey:          llmAPIKey,
 		LLMModel:           getEnv("LLM_MODEL", "auto"),
