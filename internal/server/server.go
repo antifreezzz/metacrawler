@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -141,6 +142,77 @@ func (s *Server) routes() {
 	s.router.HandleFunc("POST /api/worker/run", s.RequireAuth(s.handleWorkerRun))
 	s.router.HandleFunc("GET /api/worker/status", s.RequireAuth(s.handleWorkerStatus))
 	s.router.HandleFunc("GET /api/worker/events", s.RequireAuth(s.handleWorkerEvents))
+
+	// Публичный RSS-фид последних добавленных игр
+	s.router.HandleFunc("GET /rss", s.handleRSS)
+}
+
+type rssChannel struct {
+	XMLName     xml.Name  `xml:"rss"`
+	Version     string    `xml:"version,attr"`
+	Title       string    `xml:"channel>title"`
+	Link        string    `xml:"channel>link"`
+	Description string    `xml:"channel>description"`
+	Language    string    `xml:"channel>language"`
+	LastBuild   string    `xml:"channel>lastBuildDate"`
+	Items       []rssItem `xml:"channel>item"`
+}
+
+type rssItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	GUID        string `xml:"guid"`
+	PubDate     string `xml:"pubDate"`
+	Description string `xml:"description"`
+}
+
+func (s *Server) handleRSS(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	games, err := s.db.ListGames(ctx, storage.ListFilter{Sort: "newest", Limit: 30})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]rssItem, 0, len(games))
+	for _, g := range games {
+		link := fmt.Sprintf("/games/%s", g.Slug)
+		desc := g.Description
+		if desc == "" {
+			desc = "Описание пока не собрано."
+		}
+		pubDate := g.CreatedAt.UTC().Format(time.RFC1123Z)
+		items = append(items, rssItem{
+			Title:       g.Title,
+			Link:        link,
+			GUID:        link,
+			PubDate:     pubDate,
+			Description: desc,
+		})
+	}
+
+	feed := rssChannel{
+		XMLName:     xml.Name{Local: "rss"},
+		Version:     "2.0",
+		Title:       "Metacrawler — новые игры",
+		Link:        "/",
+		Description: "Последние добавленные игры из каталога Metacritic с оценками и ИИ-анализом отзывов.",
+		Language:    "ru",
+		LastBuild:   time.Now().UTC().Format(time.RFC1123Z),
+		Items:       items,
+	}
+
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(xml.Header))
+	enc := xml.NewEncoder(w)
+	enc.Indent("", "  ")
+	if err := enc.Encode(feed); err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("\n"))
 }
 
 type PaginationInfo struct {

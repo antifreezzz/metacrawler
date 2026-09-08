@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,7 @@ func TestIndexHandler_OpenGraphDefaults(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, body, `<meta property="og:title"`)
 	require.Contains(t, body, `<meta property="og:site_name" content="Metacrawler" />`)
+	require.Contains(t, body, `type="application/rss+xml"`)
 	require.Contains(t, body, `rel="icon"`)
 }
 
@@ -141,6 +143,77 @@ func TestGameDetailHandler_OpenGraphTags(t *testing.T) {
 	require.Contains(t, body, `<meta property="og:image" content="https://example.com/cover.jpg" />`)
 	require.Contains(t, body, `<meta property="og:url" content="http://example.com/games/og-game" />`)
 	require.Contains(t, body, `<meta name="twitter:card" content="summary_large_image" />`)
+}
+
+func TestRSSFeed_ReturnsValidXML(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	req := httptest.NewRequest("GET", "/rss", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/rss+xml")
+
+	var feed rssFeed
+	err := xml.Unmarshal([]byte(body), &feed)
+	require.NoError(t, err, "feed must be valid XML: %s", body)
+	require.Equal(t, "Metacrawler — новые игры", feed.Channel.Title)
+	require.Len(t, feed.Channel.Items, 2)
+
+	slugs := []string{feed.Channel.Items[0].Link, feed.Channel.Items[1].Link}
+	require.Contains(t, slugs, "/games/elden-ring")
+	require.Contains(t, slugs, "/games/dark-souls-3")
+	require.NotEmpty(t, feed.Channel.Items[0].PubDate)
+}
+
+type rssFeed struct {
+	XMLName xml.Name `xml:"rss"`
+	Version string   `xml:"version,attr"`
+	Channel struct {
+		Title string    `xml:"title"`
+		Link  string    `xml:"link"`
+		Items []rssItem `xml:"item"`
+	} `xml:"channel"`
+}
+
+type rssChan struct {
+	Title string `xml:"title"`
+	Link  string `xml:"link"`
+}
+
+type rssItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	GUID        string `xml:"guid"`
+	PubDate     string `xml:"pubDate"`
+	Description string `xml:"description"`
+}
+
+func TestRSSFeed_EscapesSpecialChars(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-rss",
+		Slug:        "rss-game",
+		Title:       "Game <X> & \"Weird\"",
+		Description: "Desc with <tags> & ampersands",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	req := httptest.NewRequest("GET", "/rss", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	var feed rssFeed
+	err := xml.Unmarshal(rec.Body.Bytes(), &feed)
+	require.NoError(t, err, "special chars must be escaped, body: %s", rec.Body.String())
+	require.Contains(t, feed.Channel.Items[0].Title, "Game <X> & \"Weird\"")
 }
 
 func TestGameListPartial_FiltersResults(t *testing.T) {
