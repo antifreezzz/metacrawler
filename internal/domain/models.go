@@ -40,15 +40,16 @@ type Game struct {
 
 // GamePlatform хранит оценки и данные игры для конкретной платформы (PC, PS5, Xbox Series X и т.д.).
 type GamePlatform struct {
-	ID          int64            `json:"id"`
-	GameID      string           `json:"game_id"`
-	Platform    string           `json:"platform"`
-	Metascore   *int             `json:"metascore,omitempty"` // nil если TBD
-	Userscore   *float64         `json:"userscore,omitempty"` // nil если TBD
-	PlatformURL string           `json:"platform_url"`
-	UpdatedAt   time.Time        `json:"updated_at"`
-	Reviews     []Review         `json:"reviews,omitempty"`
-	Summary     *PlatformSummary `json:"summary,omitempty"`
+	ID           int64            `json:"id"`
+	GameID       string           `json:"game_id"`
+	Platform     string           `json:"platform"`
+	Metascore    *int             `json:"metascore,omitempty"` // nil если TBD
+	Userscore    *float64         `json:"userscore,omitempty"` // nil если TBD
+	PlatformURL  string           `json:"platform_url"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+	Reviews      []Review         `json:"reviews,omitempty"`
+	Summary      *PlatformSummary `json:"summary,omitempty"`
+	ScoreHistory []ScorePoint     `json:"score_history,omitempty"` // история изменений оценок, заполняется при отдаче страницы
 }
 
 // Review представляет отдельный отзыв критика или пользователя.
@@ -80,6 +81,14 @@ type PlatformSummary struct {
 	UserPros       string    `json:"user_pros"`
 	UserCons       string    `json:"user_cons"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// ScorePoint - зафиксированное значение оценок платформы конкретного момента времени.
+type ScorePoint struct {
+	GamePlatformID int64     `json:"game_platform_id"`
+	Metascore      *int      `json:"metascore,omitempty"`
+	Userscore      *float64  `json:"userscore,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at"`
 }
 
 // GameEmbedding хранит векторное представление игры для поиска похожих.

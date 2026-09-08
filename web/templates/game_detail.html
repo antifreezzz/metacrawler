@@ -51,12 +51,18 @@
           <div class="rating-line">
             <span>Критики / 100</span
             ><span
+              >{{if .Metascore}}{{$d := formatMetascoreDelta .Metascore .ScoreHistory}}{{if $d}}<span
+                class="score-delta {{scoreDeltaDir $d}}"
+                aria-label="Изменение оценки"
+                >{{$d}}</span
+              >{{end}}{{end}}<span
               class="score {{if not .Metascore}}score-tbd{{else if isScoreHigh .Metascore}}score-green{{else if isScoreMid .Metascore}}score-yellow{{else}}score-red{{end}}"
               >{{if .Metascore}}{{formatScore .Metascore}}{{else}}—{{end}}</span
             >
           </div>
           <div class="rating-line">
             <span>Игроки / 10</span
+            ><span class="muted" style="font-size: 11px">{{formatUserscoreDelta .Userscore .ScoreHistory}}</span
             ><span class="user-score"
               >{{if .Userscore}}{{formatUserScore
               .Userscore}}{{else}}—{{end}}</span

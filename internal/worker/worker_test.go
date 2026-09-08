@@ -303,6 +303,53 @@ func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
 	require.Nil(t, summary, "выдуманное резюме недопустимо: строки summary быть не должно")
 }
 
+func TestWorker_RecordsScoreHistory(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80, score85 := 80, 85
+	game1 := &domain.Game{
+		Slug:  "scoring-game",
+		Title: "Scoring Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+		},
+	}
+	game2 := &domain.Game{
+		Slug:  "scoring-game",
+		Title: "Scoring Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score85},
+		},
+	}
+
+	revs := []domain.Review{}
+	scraperMock.On("FetchGameDetails", mock.Anything, "scoring-game").Return(game1, revs, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+
+	_, err := mgr.RecrawlGame(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	// Пересбор: metascore изменился с 80 на 85
+	scraperMock.On("FetchGameDetails", mock.Anything, "scoring-game").Return(game2, revs, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.2}, nil).Once()
+
+	_, err = mgr.RecrawlGame(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	saved, err := db.GetGameBySlug(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	hist, err := db.GetScoreHistory(ctx, saved.Platforms[0].ID)
+	require.NoError(t, err)
+	require.Len(t, hist, 2)
+	require.Equal(t, 80, *hist[0].Metascore)
+	require.Equal(t, 85, *hist[1].Metascore)
+}
+
 func TestWorker_RecrawlGame(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()

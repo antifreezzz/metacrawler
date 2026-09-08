@@ -455,7 +455,15 @@ func (m *Manager) processGame(ctx context.Context, slug, today string) (*domain.
 		return nil, fmt.Errorf("get saved game: %w", err)
 	}
 
-	// 2. Распределение отзывов по платформам:
+	// 2. Фиксация истории оценок платформ (пишется только при изменении)
+	for i := range savedGame.Platforms {
+		p := savedGame.Platforms[i]
+		if err := m.db.RecordScorePoint(ctx, p.ID, p.Metascore, p.Userscore); err != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [History] Ошибка записи истории оценок (%s): %v", p.Platform, err))
+		}
+	}
+
+	// 3. Распределение отзывов по платформам:
 	// отзыв с известной платформой сохраняется только в неё,
 	// отзыв без платформы - во все платформы (обратная совместимость с легаси-данными).
 	for i, p := range savedGame.Platforms {

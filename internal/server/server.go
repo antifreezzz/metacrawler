@@ -88,6 +88,43 @@ func (s *Server) loadTemplates() {
 			}
 			return fmt.Sprintf("%.1f", *score)
 		},
+		"formatMetascoreDelta": func(cur *int, hist []domain.ScorePoint) string {
+			if cur == nil || len(hist) < 2 {
+				return ""
+			}
+			prev := hist[len(hist)-2].Metascore
+			if prev == nil {
+				return ""
+			}
+			delta := *cur - *prev
+			if delta == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%+d", delta)
+		},
+		"formatUserscoreDelta": func(cur *float64, hist []domain.ScorePoint) string {
+			if cur == nil || len(hist) < 2 {
+				return ""
+			}
+			prev := hist[len(hist)-2].Userscore
+			if prev == nil {
+				return ""
+			}
+			delta := *cur - *prev
+			if delta == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%+.1f", delta)
+		},
+		"scoreDeltaDir": func(delta string) string {
+			switch {
+			case strings.HasPrefix(delta, "+"):
+				return "up"
+			case strings.HasPrefix(delta, "-"):
+				return "down"
+			}
+			return ""
+		},
 		"formatReleaseDate": func(dateStr string) string {
 			if dateStr == "" {
 				return ""
@@ -520,11 +557,12 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Подтягиваем резюме отзывов для каждой платформы
+	// Подтягиваем резюме и историю оценок для каждой платформы
 	for i := range game.Platforms {
 		summary, _ := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID)
 		reviews, _ := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
 		game.Platforms[i].Reviews = reviews
+		game.Platforms[i].ScoreHistory, _ = s.db.GetScoreHistory(ctx, game.Platforms[i].ID)
 		if summary != nil {
 			game.Platforms[i].Summary = summary
 		} else if len(reviews) > 0 {

@@ -253,6 +253,41 @@ func TestGameDetailHandler_NoSummary_ShowsRealQuotesNotFake(t *testing.T) {
 	require.NotContains(t, body, "формируется")
 }
 
+func TestGameDetailHandler_ShowsScoreDelta(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	score90 := 90
+	game := &domain.Game{
+		ID:    "g-delta",
+		Slug:  "delta-game",
+		Title: "Delta Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score90},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "delta-game")
+	require.NoError(t, err)
+
+	// История: 88 -> (upsert) -> 90
+	s1, s2 := 88, 90
+	_ = s2
+	require.NoError(t, db.RecordScorePoint(ctx, saved.Platforms[0].ID, &s1, nil))
+	require.NoError(t, db.RecordScorePoint(ctx, saved.Platforms[0].ID, &score90, nil))
+
+	req := httptest.NewRequest("GET", "/games/delta-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, "score-delta up")
+	// html/template экранирует "+" как &#43; в текстовом узле
+	require.Contains(t, body, "&#43;2")
+}
+
 func TestGameListPartial_FiltersResults(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()

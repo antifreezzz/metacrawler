@@ -251,6 +251,82 @@ func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
 	require.Empty(t, pcRevs)
 }
 
+func TestScoreHistory_RecordAndGet(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "history-game",
+		Title: "History Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "history-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	m1, m2 := 90, 92
+	u1, u2 := 8.4, 8.6
+
+	// Первая фиксация
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m1, &u1))
+	hist, err := db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+
+	// Без изменений - дубликат не пишется
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m1, &u1))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+
+	// Metascore изменился - новая точка
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m2, &u1))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 2)
+	require.Equal(t, 90, *hist[0].Metascore)
+	require.Equal(t, 92, *hist[1].Metascore)
+
+	// Userscore изменился - тоже новая точка
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m2, &u2))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 3)
+	require.InDelta(t, 8.6, *hist[2].Userscore, 0.001)
+}
+
+func TestScoreHistory_FirstPointNil(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "nil-history-game",
+		Title: "Nil History Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "nil-history-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	// TBD (nil) -> затем появилась оценка
+	score := 75
+	require.NoError(t, db.RecordScorePoint(ctx, platID, nil, nil))
+	hist, _ := db.GetScoreHistory(ctx, platID)
+	require.Len(t, hist, 1)
+	require.Nil(t, hist[0].Metascore)
+
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &score, nil))
+	hist, _ = db.GetScoreHistory(ctx, platID)
+	require.Len(t, hist, 2)
+	require.Equal(t, 75, *hist[1].Metascore)
+}
+
 func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
 	ctx := context.Background()
 	dsn := t.TempDir() + "/migrate_summaries.db"
