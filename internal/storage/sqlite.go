@@ -187,6 +187,30 @@ func (d *DB) migrate() error {
 		  AND platform != (SELECT gp.platform FROM game_platforms gp WHERE gp.id = game_reviews.game_platform_id);
 	`)
 
+	// Чистка легаси-отзывов старого парсера: в текст склеивались дата, оценка и автор
+	// ("Jan 5, 2024100 Parse\"Superb\""), а одна строка копировалась во все платформы.
+	// Такие строки не перезаписываются пересбором (другой content_hash), поэтому удаляются:
+	// ближайший цикл сбора вернет те же отзывы в чистом виде.
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][0-9]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][0-9]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][A-Za-z]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][A-Za-z]*';
+	`)
+	// Схлопывание остаточных копий одного отзыва на нескольких платформах:
+	// в новой схеме отзыв живет только в своей платформе.
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE content_hash IN (
+			SELECT content_hash FROM game_reviews
+			GROUP BY content_hash HAVING COUNT(DISTINCT game_platform_id) > 1
+		) AND id NOT IN (
+			SELECT MIN(id) FROM game_reviews
+			GROUP BY content_hash
+		);
+	`)
+
 	// Чистка выдуманных резюме из старого фоллбэка (когда LLM была недоступна,
 	// генерировался шаблонный текст, нарушающий принцип честности данных).
 	_, _ = d.db.Exec(`

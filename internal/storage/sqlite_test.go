@@ -364,6 +364,68 @@ func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
 	require.Nil(t, summary, "выдуманное резюме из старого фоллбэка должно быть удалено миграцией")
 }
 
+func TestMigrate_CleansLegacyGluedReviewsAndMultiPlatformDups(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/legacy_reviews.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "legacy-game",
+		Title: "Legacy Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+			{Platform: "playstation-5"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "legacy-game")
+	require.NoError(t, err)
+	var pcID, ps5ID int64
+	for _, p := range saved.Platforms {
+		switch p.Platform {
+		case "pc":
+			pcID = p.ID
+		case "playstation-5":
+			ps5ID = p.ID
+		}
+	}
+	require.NoError(t, db.Close())
+
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	// Легаси-мусор старого парсера: дата склеена с текстом, автор - с оценкой,
+	// копирование одной строки во все платформы (одинаковый hash).
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform) VALUES
+			(?, 'critic', 'tbd IGN', NULL, 'Jan 5, 2024100 Parse"Superb"',        'h-dup-glued', '', ''),
+			(?, 'critic', 'tbd IGN', NULL, 'Jan 5, 2024100 Parse"Superb"',        'h-dup-glued', '', ''),
+			(?, 'critic', 'tbd Push', NULL, 'Feb 8, 2024tbd Push"Also glued"',    'h-single-glued', '', ''),
+			(?, 'user',   'User1',   NULL, 'Почти чистый отзыв про дату May 5, 2023 был great.', 'h-clean-a', '', ''),
+			(?, 'user',   'UserB',   NULL, 'Another clean review text.',                          'h-clean-b', '', ''),
+			(?, 'user',   'UserB',   NULL, 'Another clean review text.',                          'h-clean-b', '', '');
+	`, ps5ID, pcID, ps5ID, pcID, pcID, ps5ID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	// Склеенные тексты удалены (восстановятся чистыми при ближайшем пересборе)
+	revsPC, _ := db2.GetReviewsByPlatformID(ctx, pcID)
+	revsPS5, _ := db2.GetReviewsByPlatformID(ctx, ps5ID)
+
+	remaining := map[string]int{}
+	for _, r := range append(append([]domain.Review{}, revsPC...), revsPS5...) {
+		remaining[r.ContentHash]++
+	}
+	require.Equal(t, map[string]int{"h-clean-a": 1, "h-clean-b": 1}, remaining,
+		"склеенные строки удаляются, чистые дубли схлопываются до одной платформы")
+}
+
 func TestReviewsSummary_Upsert(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
