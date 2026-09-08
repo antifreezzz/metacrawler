@@ -109,11 +109,16 @@
         <p class="muted" style="font-size: 13px">
           Анализа отзывов игроков пока нет.
         </p>
-        {{end}} {{else if .Reviews}}
-        <p class="body-copy">
-          Анализ отзывов формируется. Обновите страницу через пару секунд.
+        {{end}}         {{else if .Reviews}}
+        <p class="muted" style="font-size: 13px; margin: 0 0 10px">
+          Автоматический анализ отзывов пока недоступен. Цитаты прямо из
+          отзывов:
         </p>
-        {{else}}
+        {{range $i, $r := .Reviews}}{{if lt $i 3}}
+        <div class="opinion">
+          <strong>{{if $r.DateStr}}{{$r.DateStr}} · {{end}}{{$r.Author}}</strong>{{$r.Text}}
+        </div>
+        {{end}}{{end}} {{else}}
         <p class="muted" style="font-size: 14px">
           На Metacritic пока нет отзывов критиков и игроков для этой платформы.
         </p>

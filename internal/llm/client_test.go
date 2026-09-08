@@ -182,8 +182,24 @@ func TestLlamaCpp_DynamicModelAndNoAPIKey(t *testing.T) {
 	require.Equal(t, "/models/LiquidAI-LFM2.5-Q4_K_M.gguf", requestedModel, "Should dynamically discover the loaded model from /models")
 }
 
-func TestSummarizeReviews_GracefulFallbackOnNetworkError(t *testing.T) {
-	// Server returns 500 Internal Server Error
+func TestSummarizeReviews_NoAPIKey_ReturnsUnavailableError(t *testing.T) {
+	// Честность данных: без ключа и без локального эндпоинта резюме не выдумывается.
+	client := llm.NewClient("http://llm.example.com/v1", "", "gpt-4o-mini", "local")
+	require.False(t, client.HasAPIKey())
+
+	criticReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Great gameplay and solid graphics."},
+	}
+	userReviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeUser, Author: "Player", Text: "Enjoyed every hour of it."},
+	}
+
+	res, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
+	require.ErrorIs(t, err, llm.ErrLLMUnavailable)
+	require.Nil(t, res)
+}
+
+func TestSummarizeReviews_ServerError_ReturnsError(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GPU out of memory", http.StatusInternalServerError)
 	}))
@@ -198,15 +214,12 @@ func TestSummarizeReviews_GracefulFallbackOnNetworkError(t *testing.T) {
 		{ReviewType: domain.ReviewTypeUser, Author: "Gamer99", Text: "One of the best games ever made."},
 	}
 
-	summary, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
-	require.NoError(t, err, "Should not return error on LLM 500, but fall back gracefully")
-	require.NotNil(t, summary)
-	require.NotEmpty(t, summary.CriticPros)
-	require.NotEmpty(t, summary.UserPros)
+	res, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
+	require.Error(t, err, "ошибка LLM должна возвращаться, а не маскироваться выдуманным текстом")
+	require.Nil(t, res)
 }
 
-func TestSummarizeReviews_GracefulFallbackOnInvalidJSON(t *testing.T) {
-	// Server returns non-JSON text
+func TestSummarizeReviews_InvalidJSON_ReturnsError(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
 			"choices": []map[string]interface{}{
@@ -231,11 +244,9 @@ func TestSummarizeReviews_GracefulFallbackOnInvalidJSON(t *testing.T) {
 		{ReviewType: domain.ReviewTypeUser, Author: "Player", Text: "Enjoyed every hour of it."},
 	}
 
-	summary, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
-	require.NoError(t, err, "Should not return error on invalid JSON, but fall back gracefully")
-	require.NotNil(t, summary)
-	require.NotEmpty(t, summary.CriticPros)
-	require.NotEmpty(t, summary.UserPros)
+	res, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
+	require.Error(t, err, "нераспарсимый ответ LLM должен возвращаться ошибкой, без выдуманного резюме")
+	require.Nil(t, res)
 }
 
 

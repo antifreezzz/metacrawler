@@ -251,6 +251,43 @@ func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
 	require.Empty(t, pcRevs)
 }
 
+func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/migrate_summaries.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "fake-summaries-game",
+		Title: "Fake Summaries Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "fake-summaries-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	// Платформа-подстава с фирменной фразой выдуманного фоллбэка
+	require.NoError(t, db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+		GamePlatformID: platID,
+		CriticPros:     "Критики отмечают высокое качество графики и проработку игрового мира.",
+		UserPros:       "Игрокам нравится атмосфера, динамика и увлекательный сюжет.",
+	}))
+	require.NoError(t, db.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	summary, err := db2.GetPlatformSummary(ctx, platID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "выдуманное резюме из старого фоллбэка должно быть удалено миграцией")
+}
+
 func TestReviewsSummary_Upsert(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

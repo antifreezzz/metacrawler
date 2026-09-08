@@ -178,6 +178,16 @@ func (d *DB) migrate() error {
 		  AND platform != (SELECT gp.platform FROM game_platforms gp WHERE gp.id = game_reviews.game_platform_id);
 	`)
 
+	// Чистка выдуманных резюме из старого фоллбэка (когда LLM была недоступна,
+	// генерировался шаблонный текст, нарушающий принцип честности данных).
+	_, _ = d.db.Exec(`
+		DELETE FROM platform_summaries
+		WHERE critic_pros LIKE '%высокое качество графики и проработку игрового мира%'
+		   OR critic_cons LIKE '%отдельные огрехи оптимизации и сложность освоения%'
+		   OR user_pros LIKE '%Игрокам нравится атмосфера, динамика и увлекательный сюжет%'
+		   OR user_cons LIKE '%жалуются на баланс и технические шероховатости%';
+	`)
+
 	// Очистка ошибочно прикрепленных нерелевантных видео и шаблонных заглушек из прошлых запусков
 	_, _ = d.db.Exec(`
 		DELETE FROM youtube_analyses

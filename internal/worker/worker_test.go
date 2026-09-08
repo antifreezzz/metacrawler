@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -278,6 +279,28 @@ func TestWorker_ReviewPlatformAttribution(t *testing.T) {
 	// отзыв без платформы - во все (обратная совместимость).
 	require.ElementsMatch(t, []string{"CriticPC", "CriticAny"}, byPlatform["pc"])
 	require.ElementsMatch(t, []string{"CriticPS5", "CriticAny"}, byPlatform["playstation-5"])
+}
+
+func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	g, revs := sampleGame("llm-error-game")
+	scraperMock.On("FetchGameDetails", mock.Anything, "llm-error-game").Return(g, revs, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return((*llm.SummaryResult)(nil), fmt.Errorf("%w: no key", llm.ErrLLMUnavailable)).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+
+	saved, err := mgr.RecrawlGame(ctx, "llm-error-game")
+	// Ошибка LLM не должна валить сохранение игры
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+
+	summary, err := db.GetPlatformSummary(ctx, saved.Platforms[0].ID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "выдуманное резюме недопустимо: строки summary быть не должно")
 }
 
 func TestWorker_RecrawlGame(t *testing.T) {

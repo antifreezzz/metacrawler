@@ -216,6 +216,43 @@ func TestRSSFeed_EscapesSpecialChars(t *testing.T) {
 	require.Contains(t, feed.Channel.Items[0].Title, "Game <X> & \"Weird\"")
 }
 
+func TestGameDetailHandler_NoSummary_ShowsRealQuotesNotFake(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-quotes",
+		Slug:        "quotes-game",
+		Title:       "Quotes Game",
+		Description: "Game with reviews but no LLM summary.",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "quotes-game")
+	require.NoError(t, err)
+
+	reviews := []domain.Review{
+		{GamePlatformID: saved.Platforms[0].ID, ReviewType: domain.ReviewTypeCritic, Author: "RealCritic", Text: "The level design is genuinely brilliant and inventive."},
+	}
+	_, err = db.SaveReviews(ctx, reviews)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/games/quotes-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// Реальные цитаты отзывов показываем
+	require.Contains(t, body, "RealCritic")
+	require.Contains(t, body, "The level design is genuinely brilliant and inventive.")
+	// Никаких обещаний, что анализ «формируется»
+	require.NotContains(t, body, "формируется")
+}
+
 func TestGameListPartial_FiltersResults(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()
@@ -353,11 +390,16 @@ func TestGameDetailHandler_OnDemandSummary(t *testing.T) {
 	srv.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// Проверяем, что summary было сгенерировано и сохранено в базе
+	// Честное поведение: без подключенной LLM резюме не выдумывается,
+	// страница показывает реальные цитаты отзывов
 	sumAfter, err := db.GetPlatformSummary(ctx, platID)
 	require.NoError(t, err)
-	require.NotNil(t, sumAfter)
-	require.NotEmpty(t, sumAfter.CriticPros)
+	require.Nil(t, sumAfter, "без LLM резюме не генерируется")
+
+	body := rec.Body.String()
+	require.Contains(t, body, "IGN")
+	require.Contains(t, body, "Superb action!")
+	require.Contains(t, body, "недоступен")
 }
 
 func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
