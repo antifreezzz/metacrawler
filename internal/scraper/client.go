@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -17,9 +18,21 @@ import (
 type Client struct {
 	httpClient tls_client.HttpClient
 	baseURL    string
+	// interRequestDelay - пауза между запросами страниц одной игры (главная + подстраницы отзывов),
+	// чтобы не создавать пачку одновременных обращений к Metacritic.
+	interRequestDelay time.Duration
 }
 
 func NewClient() (*Client, error) {
+	return newClient("https://www.metacritic.com", 1200*time.Millisecond)
+}
+
+// NewClientWithBaseURL создает клиент на заданный базовый URL без межзапросной паузы (для тестов).
+func NewClientWithBaseURL(baseURL string) (*Client, error) {
+	return newClient(baseURL, 0)
+}
+
+func newClient(baseURL string, interRequestDelay time.Duration) (*Client, error) {
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(20),
 		tls_client.WithClientProfile(profiles.Chrome_133),
@@ -32,8 +45,9 @@ func NewClient() (*Client, error) {
 	}
 
 	return &Client{
-		httpClient: client,
-		baseURL:    "https://www.metacritic.com",
+		httpClient:        client,
+		baseURL:           baseURL,
+		interRequestDelay: interRequestDelay,
 	}, nil
 }
 
@@ -101,5 +115,34 @@ func (c *Client) FetchGameDetails(ctx context.Context, slug string) (*domain.Gam
 	if err != nil {
 		return nil, nil, err
 	}
-	return ParseGameDetails(slug, body)
+	game, reviews, err := ParseGameDetails(slug, body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Полные списки отзывов живут на подстраницах /critic-reviews/ и /user-reviews/.
+	// Главная страница содержит лишь несколько карточек-цитат.
+	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "critic-reviews", domain.ReviewTypeCritic)...)
+	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "user-reviews", domain.ReviewTypeUser)...)
+
+	return game, reviews, nil
+}
+
+// fetchReviewSubpage загружает и парсит одну подстраницу отзывов.
+// Ошибка загрузки не фатальна: возвращаем пустой список, основной сбор продолжается.
+func (c *Client) fetchReviewSubpage(ctx context.Context, slug, subpage string, reviewType domain.ReviewType) []domain.Review {
+	if c.interRequestDelay > 0 {
+		select {
+		case <-time.After(c.interRequestDelay):
+		case <-ctx.Done():
+			return nil
+		}
+	}
+
+	targetURL := fmt.Sprintf("%s/game/%s/%s/", c.baseURL, slug, subpage)
+	body, err := c.get(ctx, targetURL)
+	if err != nil {
+		return nil
+	}
+	return ParseReviewSubpage(body, reviewType)
 }

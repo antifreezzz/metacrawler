@@ -455,12 +455,18 @@ func (m *Manager) processGame(ctx context.Context, slug, today string) (*domain.
 		return nil, fmt.Errorf("get saved game: %w", err)
 	}
 
-	// 2. Распределение отзывов по платформам и дедубликация
+	// 2. Распределение отзывов по платформам:
+	// отзыв с известной платформой сохраняется только в неё,
+	// отзыв без платформы - во все платформы (обратная совместимость с легаси-данными).
 	for i, p := range savedGame.Platforms {
 		var platReviews []domain.Review
 		for _, r := range reviews {
-			r.GamePlatformID = p.ID
-			platReviews = append(platReviews, r)
+			if r.Platform != "" && r.Platform != p.Platform {
+				continue
+			}
+			rr := r
+			rr.GamePlatformID = p.ID
+			platReviews = append(platReviews, rr)
 		}
 		savedCount, _ := m.db.SaveReviews(ctx, platReviews)
 

@@ -2,9 +2,12 @@ package storage_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/stretchr/testify/require"
 	"metacrawler/internal/domain"
@@ -142,6 +145,110 @@ func TestReviews_DeduplicationAndTypes(t *testing.T) {
 	fetchedReviews, err := db.GetReviewsByPlatformID(ctx, platformID)
 	require.NoError(t, err)
 	require.Len(t, fetchedReviews, 2)
+}
+
+func TestReviews_PlatformStoredAndReturned(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "platform-reviews",
+		Title: "Platform Reviews Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	fetched, err := db.GetGameBySlug(ctx, "platform-reviews")
+	require.NoError(t, err)
+	require.Len(t, fetched.Platforms, 1)
+	platformID := fetched.Platforms[0].ID
+
+	reviews := []domain.Review{
+		{GamePlatformID: platformID, ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Great on PC.", Platform: "pc"},
+		{GamePlatformID: platformID, ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Runs well.", Platform: ""},
+	}
+	savedCount, err := db.SaveReviews(ctx, reviews)
+	require.NoError(t, err)
+	require.Equal(t, 2, savedCount)
+
+	fetchedReviews, err := db.GetReviewsByPlatformID(ctx, platformID)
+	require.NoError(t, err)
+	require.Len(t, fetchedReviews, 2)
+
+	byAuthor := make(map[string]domain.Review, len(fetchedReviews))
+	for _, r := range fetchedReviews {
+		byAuthor[r.Author] = r
+	}
+	require.Equal(t, "pc", byAuthor["IGN"].Platform)
+	require.Equal(t, "", byAuthor["User1"].Platform)
+}
+
+func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/migrate_reviews.db"
+
+	// Первый запуск: создаем схему и данные
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "mismatch-game",
+		Title: "Mismatch Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+			{Platform: "playstation-5"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "mismatch-game")
+	require.NoError(t, err)
+
+	var pcID, ps5ID int64
+	for _, p := range saved.Platforms {
+		switch p.Platform {
+		case "pc":
+			pcID = p.ID
+		case "playstation-5":
+			ps5ID = p.ID
+		}
+	}
+	require.NotZero(t, pcID)
+	require.NotZero(t, ps5ID)
+	require.NoError(t, db.Close())
+
+	// Вставляем некорректные строки напрямую: отзыв PC под платформой PS5.
+	// platform='' - легаси-строка, должна остаться.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform) VALUES
+			(?, 'critic', 'WrongPlatform', NULL, 'PC review on PS5.', 'hash-wrong', '', 'pc'),
+			(?, 'critic', 'LegacyCopy',   NULL, 'Legacy copy.',      'hash-legacy', '', ''),
+			(?, 'critic', 'RightPlatform',NULL, 'PS5 review.',       'hash-right',  '', 'playstation-5');
+	`, ps5ID, ps5ID, ps5ID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	revs, err := db2.GetReviewsByPlatformID(ctx, ps5ID)
+	require.NoError(t, err)
+
+	authors := make([]string, 0, len(revs))
+	for _, r := range revs {
+		authors = append(authors, r.Author)
+	}
+	require.ElementsMatch(t, []string{"LegacyCopy", "RightPlatform"}, authors)
+
+	// Отзывы PC-платформы не задеты
+	pcRevs, err := db2.GetReviewsByPlatformID(ctx, pcID)
+	require.NoError(t, err)
+	require.Empty(t, pcRevs)
 }
 
 func TestReviewsSummary_Upsert(t *testing.T) {

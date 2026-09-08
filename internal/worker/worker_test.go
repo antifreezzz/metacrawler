@@ -232,6 +232,54 @@ func TestWorker_ForcedModes(t *testing.T) {
 	require.Equal(t, 1, processed)
 }
 
+func TestWorker_ReviewPlatformAttribution(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80 := 80
+	game := &domain.Game{
+		Slug:  "attrib-game",
+		Title: "Attrib Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+			{Platform: "playstation-5", Metascore: &score80},
+		},
+	}
+	reviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticPC", Text: "PC review", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticPS5", Text: "PS5 review", Platform: "playstation-5"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticAny", Text: "Any platform review"},
+	}
+	scraperMock.On("FetchGameDetails", mock.Anything, "attrib-game").Return(game, reviews, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Maybe()
+
+	_, err := mgr.RecrawlGame(ctx, "attrib-game")
+	require.NoError(t, err)
+
+	saved, err := db.GetGameBySlug(ctx, "attrib-game")
+	require.NoError(t, err)
+	require.Len(t, saved.Platforms, 2)
+
+	byPlatform := make(map[string][]string)
+	for _, p := range saved.Platforms {
+		revs, err := db.GetReviewsByPlatformID(ctx, p.ID)
+		require.NoError(t, err)
+		authors := make([]string, 0, len(revs))
+		for _, r := range revs {
+			authors = append(authors, r.Author)
+		}
+		byPlatform[p.Platform] = authors
+	}
+
+	// Отзыв с платформой должен попасть только в свою платформу,
+	// отзыв без платформы - во все (обратная совместимость).
+	require.ElementsMatch(t, []string{"CriticPC", "CriticAny"}, byPlatform["pc"])
+	require.ElementsMatch(t, []string{"CriticPS5", "CriticAny"}, byPlatform["playstation-5"])
+}
+
 func TestWorker_RecrawlGame(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()

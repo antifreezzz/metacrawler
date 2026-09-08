@@ -61,6 +61,7 @@ type Review struct {
 	Text           string     `json:"text"`
 	ContentHash    string     `json:"content_hash"`
 	DateStr        string     `json:"date_str"`
+	Platform       string     `json:"platform,omitempty"` // нормализованное имя платформы из карточки отзыва ("" если неизвестна)
 }
 
 // ComputeContentHash вычисляет SHA-256 хеш от автора и нормализованного текста для дедубликации отзывов.

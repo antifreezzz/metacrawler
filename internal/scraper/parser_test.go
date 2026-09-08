@@ -92,6 +92,62 @@ func TestParseGameDetails(t *testing.T) {
 	require.True(t, hasCritic || hasUser, "should have parsed reviews")
 }
 
+func TestParseReviewSubpage_CriticReviews(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/game_critic_reviews.html")
+	require.NoError(t, err)
+
+	reviews := scraper.ParseReviewSubpage(data, domain.ReviewTypeCritic)
+	require.Len(t, reviews, 10)
+
+	platforms := make([]string, 0, len(reviews))
+	for _, r := range reviews {
+		require.Equal(t, domain.ReviewTypeCritic, r.ReviewType)
+		require.NotEmpty(t, r.Author)
+		require.NotEmpty(t, r.Text)
+		require.NotEmpty(t, r.DateStr)
+		platforms = append(platforms, r.Platform)
+	}
+	require.Contains(t, platforms, "playstation-5")
+	require.NotContains(t, platforms, "", "платформа должна распарситься в каждой карточке")
+}
+
+func TestParseReviewSubpage_UserReviews(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/game_user_reviews.html")
+	require.NoError(t, err)
+
+	reviews := scraper.ParseReviewSubpage(data, domain.ReviewTypeUser)
+	require.Len(t, reviews, 50)
+	for _, r := range reviews {
+		require.Equal(t, domain.ReviewTypeUser, r.ReviewType)
+		require.NotEmpty(t, r.Author)
+		require.NotEmpty(t, r.Text)
+	}
+}
+
+func TestParseReviewSubpage_CleanAuthor(t *testing.T) {
+	// Автор не должен содержать оценку из круга слева от имени ("100 Areajugones" - баг)
+	data, err := os.ReadFile("../../testdata/game_critic_reviews.html")
+	require.NoError(t, err)
+
+	reviews := scraper.ParseReviewSubpage(data, domain.ReviewTypeCritic)
+	require.NotEmpty(t, reviews)
+	for _, r := range reviews {
+		require.NotRegexp(t, `^\d+\s`, r.Author, "author polluted with score: %q", r.Author)
+	}
+}
+
+func TestParseGameDetails_ReviewPlatform(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/game_details.html")
+	require.NoError(t, err)
+
+	_, reviews, err := scraper.ParseGameDetails("elden-ring", data)
+	require.NoError(t, err)
+	require.NotEmpty(t, reviews)
+	for _, r := range reviews {
+		require.Equal(t, "playstation-5", r.Platform, "review platform should be extracted from card")
+	}
+}
+
 func TestNormalizeReleaseDate(t *testing.T) {
 	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("2022-02-25"))
 	require.Equal(t, "2022-02-25", scraper.NormalizeReleaseDate("2022-02-25T00:00:00.000Z"))

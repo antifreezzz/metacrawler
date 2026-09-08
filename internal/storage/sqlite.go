@@ -101,6 +101,7 @@ func (d *DB) migrate() error {
 		text TEXT NOT NULL,
 		content_hash TEXT NOT NULL,
 		date_str TEXT NOT NULL DEFAULT '',
+		platform TEXT NOT NULL DEFAULT '',
 		UNIQUE(game_platform_id, content_hash)
 	);
 
@@ -162,6 +163,20 @@ func (d *DB) migrate() error {
 	if colCount == 0 {
 		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`)
 	}
+
+	// Миграция существующей БД: добавляем колонку platform в game_reviews, если её нет
+	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('game_reviews') WHERE name = 'platform'`).Scan(&colCount)
+	if colCount == 0 {
+		_, _ = d.db.Exec(`ALTER TABLE game_reviews ADD COLUMN platform TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// Чистка некорректно привязанных отзывов: строка с известной платформой,
+	// лежащая под другой платформой игры (артефакт копирования отзывов во все платформы).
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE platform != ''
+		  AND platform != (SELECT gp.platform FROM game_platforms gp WHERE gp.id = game_reviews.game_platform_id);
+	`)
 
 	// Очистка ошибочно прикрепленных нерелевантных видео и шаблонных заглушек из прошлых запусков
 	_, _ = d.db.Exec(`
@@ -446,8 +461,8 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-	INSERT OR IGNORE INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str)
-	VALUES (?, ?, ?, ?, ?, ?, ?);
+	INSERT OR IGNORE INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 	`)
 	if err != nil {
 		return 0, err
@@ -459,7 +474,7 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 		if r.ContentHash == "" {
 			r.ContentHash = domain.ComputeContentHash(r.ReviewType, r.Author, r.Text)
 		}
-		res, err := stmt.ExecContext(ctx, r.GamePlatformID, string(r.ReviewType), r.Author, r.Score, r.Text, r.ContentHash, r.DateStr)
+		res, err := stmt.ExecContext(ctx, r.GamePlatformID, string(r.ReviewType), r.Author, r.Score, r.Text, r.ContentHash, r.DateStr, r.Platform)
 		if err != nil {
 			return 0, err
 		}
@@ -477,7 +492,7 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 
 func (d *DB) GetReviewsByPlatformID(ctx context.Context, platformID int64) ([]domain.Review, error) {
 	query := `
-	SELECT id, game_platform_id, review_type, author, score, text, content_hash, date_str
+	SELECT id, game_platform_id, review_type, author, score, text, content_hash, date_str, platform
 	FROM game_reviews WHERE game_platform_id = ?
 	ORDER BY id ASC;
 	`
@@ -491,7 +506,7 @@ func (d *DB) GetReviewsByPlatformID(ctx context.Context, platformID int64) ([]do
 	for rows.Next() {
 		var r domain.Review
 		var rType string
-		if err := rows.Scan(&r.ID, &r.GamePlatformID, &rType, &r.Author, &r.Score, &r.Text, &r.ContentHash, &r.DateStr); err != nil {
+		if err := rows.Scan(&r.ID, &r.GamePlatformID, &rType, &r.Author, &r.Score, &r.Text, &r.ContentHash, &r.DateStr, &r.Platform); err != nil {
 			return nil, err
 		}
 		r.ReviewType = domain.ReviewType(rType)
