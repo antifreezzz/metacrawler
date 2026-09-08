@@ -1,4 +1,9 @@
-{{define "title"}}{{.Game.Title}} — Metacrawler{{end}} {{define "content"}}
+{{define "title"}}{{.Game.Title}} — Metacrawler{{end}}
+{{define "og-title"}}<meta property="og:title" content="{{.Game.Title}} — Metacrawler" />{{end}}
+{{define "og-description"}}<meta property="og:description" content="{{.Game.Description}}" />{{end}}
+{{define "og-image"}}{{if .Game.CoverURL}}<meta property="og:image" content="{{.Game.CoverURL}}" />{{end}}{{end}}
+{{define "og-url"}}<meta property="og:url" content="{{.OGBaseURL}}/games/{{.Game.Slug}}" />{{end}}
+{{define "content"}}
 <a class="back" href="/">&larr; Назад в каталог</a>
 <div class="stack">
   <section class="detail-hero">
@@ -46,12 +51,18 @@
           <div class="rating-line">
             <span>Критики / 100</span
             ><span
+              >{{if .Metascore}}{{$d := formatMetascoreDelta .Metascore .ScoreHistory}}{{if $d}}<span
+                class="score-delta {{scoreDeltaDir $d}}"
+                aria-label="Изменение оценки"
+                >{{$d}}</span
+              >{{end}}{{end}}<span
               class="score {{if not .Metascore}}score-tbd{{else if isScoreHigh .Metascore}}score-green{{else if isScoreMid .Metascore}}score-yellow{{else}}score-red{{end}}"
               >{{if .Metascore}}{{formatScore .Metascore}}{{else}}—{{end}}</span
             >
           </div>
           <div class="rating-line">
             <span>Игроки / 10</span
+            ><span class="muted" style="font-size: 11px">{{formatUserscoreDelta .Userscore .ScoreHistory}}</span
             ><span class="user-score"
               >{{if .Userscore}}{{formatUserScore
               .Userscore}}{{else}}—{{end}}</span
@@ -104,11 +115,16 @@
         <p class="muted" style="font-size: 13px">
           Анализа отзывов игроков пока нет.
         </p>
-        {{end}} {{else if .Reviews}}
-        <p class="body-copy">
-          Анализ отзывов формируется. Обновите страницу через пару секунд.
+        {{end}}         {{else if .Reviews}}
+        <p class="muted" style="font-size: 13px; margin: 0 0 10px">
+          Автоматический анализ отзывов пока недоступен. Цитаты прямо из
+          отзывов:
         </p>
-        {{else}}
+        {{range $i, $r := .Reviews}}{{if lt $i 3}}
+        <div class="opinion">
+          <strong>{{if $r.DateStr}}{{$r.DateStr}} · {{end}}{{$r.Author}}</strong>{{$r.Text}}
+        </div>
+        {{end}}{{end}} {{else}}
         <p class="muted" style="font-size: 14px">
           На Metacritic пока нет отзывов критиков и игроков для этой платформы.
         </p>

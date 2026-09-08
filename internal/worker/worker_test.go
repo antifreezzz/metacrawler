@@ -2,6 +2,8 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,6 +234,314 @@ func TestWorker_ForcedModes(t *testing.T) {
 	require.Equal(t, 1, processed)
 }
 
+func TestWorker_ReviewPlatformAttribution(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80 := 80
+	game := &domain.Game{
+		Slug:  "attrib-game",
+		Title: "Attrib Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+			{Platform: "playstation-5", Metascore: &score80},
+		},
+	}
+	reviews := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticPC", Text: "PC review", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticPS5", Text: "PS5 review", Platform: "playstation-5"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "CriticAny", Text: "Any platform review"},
+	}
+	scraperMock.On("FetchGameDetails", mock.Anything, "attrib-game").Return(game, reviews, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Maybe()
+
+	_, err := mgr.RecrawlGame(ctx, "attrib-game")
+	require.NoError(t, err)
+
+	saved, err := db.GetGameBySlug(ctx, "attrib-game")
+	require.NoError(t, err)
+	require.Len(t, saved.Platforms, 2)
+
+	byPlatform := make(map[string][]string)
+	for _, p := range saved.Platforms {
+		revs, err := db.GetReviewsByPlatformID(ctx, p.ID)
+		require.NoError(t, err)
+		authors := make([]string, 0, len(revs))
+		for _, r := range revs {
+			authors = append(authors, r.Author)
+		}
+		byPlatform[p.Platform] = authors
+	}
+
+	// Отзыв с платформой должен попасть только в свою платформу,
+	// отзыв без платформы - во все (обратная совместимость).
+	require.ElementsMatch(t, []string{"CriticPC", "CriticAny"}, byPlatform["pc"])
+	require.ElementsMatch(t, []string{"CriticPS5", "CriticAny"}, byPlatform["playstation-5"])
+}
+
+func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	g, revs := sampleGame("llm-error-game")
+	scraperMock.On("FetchGameDetails", mock.Anything, "llm-error-game").Return(g, revs, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return((*llm.SummaryResult)(nil), fmt.Errorf("%w: no key", llm.ErrLLMUnavailable)).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+
+	saved, err := mgr.RecrawlGame(ctx, "llm-error-game")
+	// Ошибка LLM не должна валить сохранение игры
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+
+	summary, err := db.GetPlatformSummary(ctx, saved.Platforms[0].ID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "выдуманное резюме недопустимо: строки summary быть не должно")
+}
+
+// recordingLLM - фейковый LLM со счётчиком вызовов и пиковой одновременности.
+type recordingLLM struct {
+	mu             sync.Mutex
+	summarizeCalls int
+	peakConcurrent int
+	current        int
+	delay          time.Duration
+}
+
+func (m *recordingLLM) SummarizeReviews(ctx context.Context, title, platform string, critics, users []domain.Review) (*llm.SummaryResult, error) {
+	m.mu.Lock()
+	m.summarizeCalls++
+	m.current++
+	if m.current > m.peakConcurrent {
+		m.peakConcurrent = m.current
+	}
+	m.mu.Unlock()
+
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
+
+	m.mu.Lock()
+	m.current--
+	m.mu.Unlock()
+
+	return &llm.SummaryResult{CriticPros: "P:" + platform}, nil
+}
+
+func (m *recordingLLM) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	return []float32{0.1}, nil
+}
+
+func (m *recordingLLM) HasAPIKey() bool        { return true }
+func (m *recordingLLM) ChatModel() string      { return "test-model" }
+func (m *recordingLLM) EmbeddingModel() string { return "test-emb" }
+
+func setupWorkerEnvWithLLM(t *testing.T, llmClient worker.LLMClient) (*storage.DB, *MockScraper, *worker.Manager) {
+	t.Helper()
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		CrawlDelayMinMs: 1,
+		CrawlDelayMaxMs: 2,
+	}
+	scraperMock := new(MockScraper)
+	mgr := worker.NewManager(db, scraperMock, llmClient, nil, cfg)
+	return db, scraperMock, mgr
+}
+
+func TestWorker_SkipsSummaryWhenNoNewReviews(t *testing.T) {
+	recLLM := &recordingLLM{}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80 := 80
+	game := &domain.Game{
+		Slug:  "no-new-game",
+		Title: "No New Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+		},
+	}
+	revs := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review"},
+	}
+	scraperMock.On("FetchGameDetails", mock.Anything, "no-new-game").Return(game, revs, nil).Once()
+
+	_, err := mgr.RecrawlGame(ctx, "no-new-game")
+	require.NoError(t, err)
+	require.Equal(t, 1, recLLM.summarizeCalls)
+
+	// Второй пересбор: новых отзывов нет, резюме уже есть
+	scraperMock.On("FetchGameDetails", mock.Anything, "no-new-game").Return(game, revs, nil).Once()
+
+	_, err = mgr.RecrawlGame(ctx, "no-new-game")
+	require.NoError(t, err)
+	require.Equal(t, 1, recLLM.summarizeCalls,
+		"резюме не должно пересобираться, если отзывы не изменились и резюме уже есть")
+}
+
+func TestWorker_ParallelPlatformSummaries(t *testing.T) {
+	recLLM := &recordingLLM{delay: 50 * time.Millisecond}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score := 80
+	game := &domain.Game{
+		Slug:  "parallel-game",
+		Title: "Parallel Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score},
+			{Platform: "playstation-5", Metascore: &score},
+			{Platform: "xbox-series-x", Metascore: &score},
+		},
+	}
+	revs := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "Review one"},
+	}
+	scraperMock.On("FetchGameDetails", mock.Anything, "parallel-game").Return(game, revs, nil).Once()
+
+	_, err := mgr.RecrawlGame(ctx, "parallel-game")
+	require.NoError(t, err)
+
+	// Все три платформы получили резюме, каждое - из своей платформы
+	saved, err := db.GetGameBySlug(ctx, "parallel-game")
+	require.NoError(t, err)
+	require.Len(t, saved.Platforms, 3)
+	for _, p := range saved.Platforms {
+		s, err := db.GetPlatformSummary(ctx, p.ID)
+		require.NoError(t, err)
+		require.NotNil(t, s)
+		require.Equal(t, "P:"+p.Platform, s.CriticPros)
+	}
+
+	// Платформенный анализ идет параллельно: наблюдалась одновременность >= 2
+	require.GreaterOrEqual(t, recLLM.peakConcurrent, 2)
+}
+
+// slowingEmbedLLM - LLM с замедленной эмбеддинг-стадией для проверки параллельности.
+type slowingEmbedLLM struct{}
+
+func (m *slowingEmbedLLM) SummarizeReviews(ctx context.Context, title, platform string, critics, users []domain.Review) (*llm.SummaryResult, error) {
+	return &llm.SummaryResult{}, nil
+}
+
+func (m *slowingEmbedLLM) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	time.Sleep(60 * time.Millisecond)
+	return []float32{0.1, 0.2}, nil
+}
+
+func (m *slowingEmbedLLM) HasAPIKey() bool        { return false }
+func (m *slowingEmbedLLM) ChatModel() string      { return "" }
+func (m *slowingEmbedLLM) EmbeddingModel() string { return "" }
+
+// recordingYT - фейковый YouTube-клиент с трекингом одновременности.
+type recordingYT struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (y *recordingYT) AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*domain.YouTubeAnalysis, error) {
+	y.mu.Lock()
+	y.calls++
+	y.mu.Unlock()
+	time.Sleep(40 * time.Millisecond)
+	return &domain.YouTubeAnalysis{GameID: gameID, VideoID: "vid", Summary: "ok"}, nil
+}
+
+func TestWorker_EmbeddingAndYouTubeRunConcurrently(t *testing.T) {
+	recLLM := &slowingEmbedLLM{}
+	recYT := &recordingYT{}
+
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{CrawlDelayMinMs: 1, CrawlDelayMaxMs: 2}
+	scraperMock := new(MockScraper)
+	mgr := worker.NewManager(db, scraperMock, recLLM, recYT, cfg)
+
+	ctx := context.Background()
+
+	game := &domain.Game{
+		Slug:        "conc-game",
+		Title:       "Conc Game",
+		Description: "Description of conc game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	revs := []domain.Review{}
+	scraperMock.On("FetchGameDetails", mock.Anything, "conc-game").Return(game, revs, nil).Once()
+
+	start := time.Now()
+	_, err = mgr.RecrawlGame(ctx, "conc-game")
+	require.NoError(t, err)
+	elapsed := time.Since(start)
+
+	// Замедленная эмбеддинг-стадия: 60мс, YouTube: 40мс.
+	// Последовательно было бы >= 100мс, параллельно - около 60мс.
+	require.Less(t, elapsed, 95*time.Millisecond,
+		"embedding и YouTube должны выполняться параллельно (elapsed=%v)", elapsed)
+	require.Equal(t, 1, recYT.calls)
+}
+
+func TestWorker_RecordsScoreHistory(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80, score85 := 80, 85
+	game1 := &domain.Game{
+		Slug:  "scoring-game",
+		Title: "Scoring Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+		},
+	}
+	game2 := &domain.Game{
+		Slug:  "scoring-game",
+		Title: "Scoring Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score85},
+		},
+	}
+
+	revs := []domain.Review{}
+	scraperMock.On("FetchGameDetails", mock.Anything, "scoring-game").Return(game1, revs, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+
+	_, err := mgr.RecrawlGame(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	// Пересбор: metascore изменился с 80 на 85
+	scraperMock.On("FetchGameDetails", mock.Anything, "scoring-game").Return(game2, revs, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.2}, nil).Once()
+
+	_, err = mgr.RecrawlGame(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	saved, err := db.GetGameBySlug(ctx, "scoring-game")
+	require.NoError(t, err)
+
+	hist, err := db.GetScoreHistory(ctx, saved.Platforms[0].ID)
+	require.NoError(t, err)
+	require.Len(t, hist, 2)
+	require.Equal(t, 80, *hist[0].Metascore)
+	require.Equal(t, 85, *hist[1].Metascore)
+}
+
 func TestWorker_RecrawlGame(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()
@@ -302,4 +612,3 @@ func TestWorker_RecrawlGameAsync(t *testing.T) {
 		return !mgr.IsRecrawling("async-target")
 	}, 2*time.Second, 10*time.Millisecond)
 }
-

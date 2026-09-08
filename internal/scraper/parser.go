@@ -316,62 +316,108 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 		game.Platforms = append(game.Platforms, p)
 	}
 
-	// 5. Парсинг отзывов
-	var reviews []domain.Review
-
-	// Отзывы критиков
-	doc.Find("[data-testid='critic-reviews'] [data-testid='review-card'], .critic-reviews [data-testid='review-card']").Each(func(i int, s *goquery.Selection) {
-		author := strings.TrimSpace(s.Find("[data-testid='review-card-header']").Text())
-		text := strings.TrimSpace(s.Find("[data-testid='review-quote-text'], [data-testid='review-card-quote-block'], [data-testid='review-card-content']").Text())
-		dateStr := strings.TrimSpace(s.Find("[data-testid='review-card-date']").Text())
-		scoreText := strings.TrimSpace(s.Find(".c-siteReviewScore span").Text())
-
-		var score *float64
-		if scoreText != "" && strings.ToLower(scoreText) != "tbd" {
-			if sc, err := strconv.ParseFloat(scoreText, 64); err == nil {
-				score = &sc
-			}
-		}
-
-		if author != "" || text != "" {
-			reviews = append(reviews, domain.Review{
-				ReviewType:  domain.ReviewTypeCritic,
-				Author:      author,
-				Score:       score,
-				Text:        text,
-				ContentHash: domain.ComputeContentHash(domain.ReviewTypeCritic, author, text),
-				DateStr:     dateStr,
-			})
-		}
-	})
-
-	// Отзывы пользователей
-	doc.Find("[data-testid='user-reviews'] [data-testid='review-card'], .user-reviews [data-testid='review-card']").Each(func(i int, s *goquery.Selection) {
-		author := strings.TrimSpace(s.Find("[data-testid='review-card-header']").Text())
-		text := strings.TrimSpace(s.Find("[data-testid='review-quote-text'], [data-testid='review-card-quote-block'], [data-testid='review-card-content']").Text())
-		dateStr := strings.TrimSpace(s.Find("[data-testid='review-card-date']").Text())
-		scoreText := strings.TrimSpace(s.Find(".c-siteReviewScore span").Text())
-
-		var score *float64
-		if scoreText != "" && strings.ToLower(scoreText) != "tbd" {
-			if sc, err := strconv.ParseFloat(scoreText, 64); err == nil {
-				score = &sc
-			}
-		}
-
-		if author != "" || text != "" {
-			reviews = append(reviews, domain.Review{
-				ReviewType:  domain.ReviewTypeUser,
-				Author:      author,
-				Score:       score,
-				Text:        text,
-				ContentHash: domain.ComputeContentHash(domain.ReviewTypeUser, author, text),
-				DateStr:     dateStr,
-			})
-		}
-	})
+	// 5. Парсинг отзывов: карточки лежат в общем контейнере product-reviews,
+	// тип отзыва определяется секцией (critic-reviews[-bottom] / user-reviews[-bottom]).
+	reviews := parseReviewCards(doc, "")
 
 	return game, reviews, nil
+}
+
+// ParseReviewSubpage парсит страницу полного списка отзывов (/critic-reviews/ или /user-reviews/).
+// Тип отзыва задается явно, т.к. на подстранице карточки лежат в общем контейнере без разделения по секциям.
+func ParseReviewSubpage(data []byte, reviewType domain.ReviewType) []domain.Review {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	return parseReviewCards(doc, reviewType)
+}
+
+// parseReviewCards обходит все карточки отзывов в контейнере product-reviews.
+// Если карточка лежит в секции critic-reviews/user-reviews (включая -bottom), тип берется из секции,
+// иначе используется defaultType (подстраницы полного списка).
+func parseReviewCards(doc *goquery.Document, defaultType domain.ReviewType) []domain.Review {
+	var reviews []domain.Review
+	doc.Find("[data-testid='product-reviews'] [data-testid='review-card']").Each(func(i int, s *goquery.Selection) {
+		reviewType := defaultType
+		if s.Closest("[data-testid='critic-reviews'], [data-testid='critic-reviews-bottom']").Length() > 0 {
+			reviewType = domain.ReviewTypeCritic
+		} else if s.Closest("[data-testid='user-reviews'], [data-testid='user-reviews-bottom']").Length() > 0 {
+			reviewType = domain.ReviewTypeUser
+		}
+		if reviewType == "" {
+			return
+		}
+		if r := parseReviewCard(s, reviewType); r != nil {
+			reviews = append(reviews, *r)
+		}
+	})
+	return reviews
+}
+
+// parseReviewCard извлекает данные одной карточки отзыва: автора, текст, дату, оценку и платформу.
+// Возвращает nil, если в карточке нет ни автора, ни текста.
+func parseReviewCard(s *goquery.Selection, reviewType domain.ReviewType) *domain.Review {
+	dateStr := strings.TrimSpace(s.Find("[data-testid='review-card-date']").First().Text())
+
+	// Автор: в шапке карточки рядом с именем лежит круг с оценкой (.c-siteReviewScore),
+	// его subtree нужно убрать, чтобы не склеивать оценку с именем автора.
+	author := ""
+	header := s.Find("[data-testid='review-card-header']").First()
+	if header.Length() > 0 {
+		headerClean := header.Clone()
+		headerClean.Find(".c-siteReviewScore").Remove()
+		author = strings.TrimSpace(headerClean.Text())
+	}
+
+	text := strings.TrimSpace(s.Find("[data-testid='review-quote-text']").First().Text())
+	if text == "" {
+		text = strings.TrimSpace(s.Find("[data-testid='review-card-quote-block']").First().Text())
+	}
+	scoreText := strings.TrimSpace(s.Find(".c-siteReviewScore span").First().Text())
+
+	var score *float64
+	if scoreText != "" && strings.ToLower(scoreText) != "tbd" {
+		if sc, err := strconv.ParseFloat(scoreText, 64); err == nil {
+			score = &sc
+		}
+	}
+
+	platform := extractReviewPlatform(s)
+
+	if author == "" && text == "" {
+		return nil
+	}
+
+	return &domain.Review{
+		ReviewType:  reviewType,
+		Author:      author,
+		Score:       score,
+		Text:        text,
+		ContentHash: domain.ComputeContentHash(reviewType, author, text),
+		DateStr:     dateStr,
+		Platform:    platform,
+	}
+}
+
+// extractReviewPlatform достает нормализованное имя платформы из карточки отзыва:
+// сначала текст элемента review-platform, затем fallback на href "?platform=...".
+func extractReviewPlatform(s *goquery.Selection) string {
+	platEl := s.Find("[data-testid='review-platform']").First()
+	if platEl.Length() == 0 {
+		return ""
+	}
+
+	if name := normalizePlatformName(platEl.Text()); name != "" {
+		return name
+	}
+
+	if href, exists := platEl.Attr("href"); exists {
+		if u, err := url.Parse(href); err == nil {
+			return normalizePlatformName(u.Query().Get("platform"))
+		}
+	}
+	return ""
 }
 
 func normalizePlatformName(raw string) string {

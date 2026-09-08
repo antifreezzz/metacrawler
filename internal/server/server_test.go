@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,193 @@ func TestIndexHandler_Returns200(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "Elden Ring")
 }
 
+func TestIndexHandler_OpenGraphDefaults(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, `<meta property="og:title"`)
+	require.Contains(t, body, `<meta property="og:site_name" content="Metacrawler" />`)
+	require.Contains(t, body, `type="application/rss+xml"`)
+	require.Contains(t, body, `rel="icon"`)
+}
+
+func TestGameDetailHandler_OpenGraphTags(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-og",
+		Slug:        "og-game",
+		Title:       "OG Game",
+		Description: "Description with \"quotes\" & symbols",
+		CoverURL:    "https://example.com/cover.jpg",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	req := httptest.NewRequest("GET", "/games/og-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, `<meta property="og:title" content="OG Game — Metacrawler" />`)
+	require.Contains(t, body, `<meta property="og:description" content="Description with &#34;quotes&#34; &amp; symbols" />`)
+	require.Contains(t, body, `<meta property="og:image" content="https://example.com/cover.jpg" />`)
+	require.Contains(t, body, `<meta property="og:url" content="http://example.com/games/og-game" />`)
+	require.Contains(t, body, `<meta name="twitter:card" content="summary_large_image" />`)
+}
+
+func TestRSSFeed_ReturnsValidXML(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	req := httptest.NewRequest("GET", "/rss", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/rss+xml")
+
+	var feed rssFeed
+	err := xml.Unmarshal([]byte(body), &feed)
+	require.NoError(t, err, "feed must be valid XML: %s", body)
+	require.Equal(t, "Metacrawler — новые игры", feed.Channel.Title)
+	require.Len(t, feed.Channel.Items, 2)
+
+	slugs := []string{feed.Channel.Items[0].Link, feed.Channel.Items[1].Link}
+	require.Contains(t, slugs, "/games/elden-ring")
+	require.Contains(t, slugs, "/games/dark-souls-3")
+	require.NotEmpty(t, feed.Channel.Items[0].PubDate)
+}
+
+type rssFeed struct {
+	XMLName xml.Name `xml:"rss"`
+	Version string   `xml:"version,attr"`
+	Channel struct {
+		Title string    `xml:"title"`
+		Link  string    `xml:"link"`
+		Items []rssItem `xml:"item"`
+	} `xml:"channel"`
+}
+
+type rssChan struct {
+	Title string `xml:"title"`
+	Link  string `xml:"link"`
+}
+
+type rssItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	GUID        string `xml:"guid"`
+	PubDate     string `xml:"pubDate"`
+	Description string `xml:"description"`
+}
+
+func TestRSSFeed_EscapesSpecialChars(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-rss",
+		Slug:        "rss-game",
+		Title:       "Game <X> & \"Weird\"",
+		Description: "Desc with <tags> & ampersands",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	req := httptest.NewRequest("GET", "/rss", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	var feed rssFeed
+	err := xml.Unmarshal(rec.Body.Bytes(), &feed)
+	require.NoError(t, err, "special chars must be escaped, body: %s", rec.Body.String())
+	require.Contains(t, feed.Channel.Items[0].Title, "Game <X> & \"Weird\"")
+}
+
+func TestGameDetailHandler_NoSummary_ShowsRealQuotesNotFake(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-quotes",
+		Slug:        "quotes-game",
+		Title:       "Quotes Game",
+		Description: "Game with reviews but no LLM summary.",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "quotes-game")
+	require.NoError(t, err)
+
+	reviews := []domain.Review{
+		{GamePlatformID: saved.Platforms[0].ID, ReviewType: domain.ReviewTypeCritic, Author: "RealCritic", Text: "The level design is genuinely brilliant and inventive."},
+	}
+	_, err = db.SaveReviews(ctx, reviews)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/games/quotes-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// Реальные цитаты отзывов показываем
+	require.Contains(t, body, "RealCritic")
+	require.Contains(t, body, "The level design is genuinely brilliant and inventive.")
+	// Никаких обещаний, что анализ «формируется»
+	require.NotContains(t, body, "формируется")
+}
+
+func TestGameDetailHandler_ShowsScoreDelta(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	score90 := 90
+	game := &domain.Game{
+		ID:    "g-delta",
+		Slug:  "delta-game",
+		Title: "Delta Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score90},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "delta-game")
+	require.NoError(t, err)
+
+	// История: 88 -> (upsert) -> 90
+	s1, s2 := 88, 90
+	_ = s2
+	require.NoError(t, db.RecordScorePoint(ctx, saved.Platforms[0].ID, &s1, nil))
+	require.NoError(t, db.RecordScorePoint(ctx, saved.Platforms[0].ID, &score90, nil))
+
+	req := httptest.NewRequest("GET", "/games/delta-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, "score-delta up")
+	// html/template экранирует "+" как &#43; в текстовом узле
+	require.Contains(t, body, "&#43;2")
+}
+
 func TestGameListPartial_FiltersResults(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()
@@ -177,9 +365,9 @@ func TestIndexHandler_Pagination(t *testing.T) {
 
 	for i := 1; i <= 30; i++ {
 		_ = db.UpsertGame(ctx, &domain.Game{
-			ID:    fmt.Sprintf("g-%d", i),
-			Slug:  fmt.Sprintf("game-%d", i),
-			Title: fmt.Sprintf("Game %02d", i),
+			ID:          fmt.Sprintf("g-%d", i),
+			Slug:        fmt.Sprintf("game-%d", i),
+			Title:       fmt.Sprintf("Game %02d", i),
 			ReleaseDate: fmt.Sprintf("2024-01-%02d", i),
 		})
 	}
@@ -237,11 +425,16 @@ func TestGameDetailHandler_OnDemandSummary(t *testing.T) {
 	srv.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// Проверяем, что summary было сгенерировано и сохранено в базе
+	// Честное поведение: без подключенной LLM резюме не выдумывается,
+	// страница показывает реальные цитаты отзывов
 	sumAfter, err := db.GetPlatformSummary(ctx, platID)
 	require.NoError(t, err)
-	require.NotNil(t, sumAfter)
-	require.NotEmpty(t, sumAfter.CriticPros)
+	require.Nil(t, sumAfter, "без LLM резюме не генерируется")
+
+	body := rec.Body.String()
+	require.Contains(t, body, "IGN")
+	require.Contains(t, body, "Superb action!")
+	require.Contains(t, body, "недоступен")
 }
 
 func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
@@ -325,4 +518,3 @@ func TestLogin_OpenRedirectPrevention(t *testing.T) {
 	require.Equal(t, http.StatusFound, recValid.Code)
 	require.Equal(t, "/games/elden-ring", recValid.Header().Get("Location"))
 }
-

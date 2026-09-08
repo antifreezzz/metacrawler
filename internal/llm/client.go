@@ -3,11 +3,10 @@ package llm
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +22,10 @@ type SummaryResult struct {
 	UserPros   string `json:"user_pros"`
 	UserCons   string `json:"user_cons"`
 }
+
+// ErrLLMUnavailable означает, что резюме сгенерировать нельзя: LLM не подключена
+// или ответила ошибкой. Выдуманный текст в этом случае запрещен (честность данных).
+var ErrLLMUnavailable = errors.New("llm unavailable: summary cannot be generated")
 
 type Client struct {
 	baseURL          string
@@ -227,10 +230,10 @@ func cleanJSONMarkdown(s string) string {
 }
 
 // SummarizeReviews отправляет отзывы критиков и игроков в LLM для формирования раздельного резюме плюсов и минусов.
+// При недоступности LLM возвращается ErrLLMUnavailable: фейковые резюме не генерируются.
 func (c *Client) SummarizeReviews(ctx context.Context, gameTitle, platform string, criticReviews, userReviews []domain.Review) (*SummaryResult, error) {
-	// Fallback если нет API-ключа/локального сервера или пустой список отзывов
 	if !c.HasAPIKey() {
-		return c.generateFallbackSummary(criticReviews, userReviews), nil
+		return nil, fmt.Errorf("%w: LLM_API_KEY не задан", ErrLLMUnavailable)
 	}
 
 	var criticText strings.Builder
@@ -281,8 +284,11 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 	}
 
 	resp, respBody, err := c.sendRequest(ctx, "POST", "/chat/completions", bodyBytes)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return c.generateFallbackSummary(criticReviews, userReviews), nil
+	if err != nil {
+		return nil, fmt.Errorf("%w: request failed: %v", ErrLLMUnavailable, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: status %d: %s", ErrLLMUnavailable, resp.StatusCode, truncateText(string(respBody), 120))
 	}
 
 	content := gjson.GetBytes(respBody, "choices.0.message.content").String()
@@ -293,11 +299,11 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 
 	var result SummaryResult
 	if err := json.Unmarshal([]byte(cleanContent), &result); err != nil {
-		return c.generateFallbackSummary(criticReviews, userReviews), nil
+		return nil, fmt.Errorf("%w: invalid JSON response: %v", ErrLLMUnavailable, err)
 	}
 
 	if result.CriticPros == "" && result.CriticCons == "" && result.UserPros == "" && result.UserCons == "" {
-		return c.generateFallbackSummary(criticReviews, userReviews), nil
+		return nil, fmt.Errorf("%w: empty summary fields", ErrLLMUnavailable)
 	}
 
 	return &result, nil
@@ -424,43 +430,6 @@ func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, erro
 	}
 
 	return vec, nil
-}
-
-func (c *Client) generateFallbackSummary(criticReviews, userReviews []domain.Review) *SummaryResult {
-	res := &SummaryResult{
-		CriticPros: "Критики отмечают высокое качество графики и проработку игрового мира.",
-		CriticCons: "Критики указывают на отдельные огрехи оптимизации и сложность освоения.",
-		UserPros:   "Игрокам нравится атмосфера, динамика и увлекательный сюжет.",
-		UserCons:   "Игроки жалуются на баланс и технические шероховатости на старте.",
-	}
-	if len(criticReviews) > 0 {
-		res.CriticPros = fmt.Sprintf("Критики (%s): %s", criticReviews[0].Author, truncateText(criticReviews[0].Text, 120))
-	}
-	if len(userReviews) > 0 {
-		res.UserPros = fmt.Sprintf("Игроки (%s): %s", userReviews[0].Author, truncateText(userReviews[0].Text, 120))
-	}
-	return res
-}
-
-func generateFallbackEmbedding(text string, dim int) []float32 {
-	h := sha256.Sum256([]byte(text))
-	vec := make([]float32, dim)
-	for i := 0; i < dim; i++ {
-		byteVal := h[i%len(h)]
-		vec[i] = float32(byteVal)/255.0 - 0.5
-	}
-	// Нормализация вектора
-	var norm float64
-	for _, v := range vec {
-		norm += float64(v * v)
-	}
-	if norm > 0 {
-		sqrtNorm := float32(math.Sqrt(norm))
-		for i := range vec {
-			vec[i] /= sqrtNorm
-		}
-	}
-	return vec
 }
 
 func truncateText(s string, maxLen int) string {

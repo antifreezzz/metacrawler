@@ -101,6 +101,7 @@ func (d *DB) migrate() error {
 		text TEXT NOT NULL,
 		content_hash TEXT NOT NULL,
 		date_str TEXT NOT NULL DEFAULT '',
+		platform TEXT NOT NULL DEFAULT '',
 		UNIQUE(game_platform_id, content_hash)
 	);
 
@@ -148,9 +149,18 @@ func (d *DB) migrate() error {
 		UNIQUE(game_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS score_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		game_platform_id INTEGER NOT NULL REFERENCES game_platforms(id) ON DELETE CASCADE,
+		metascore INTEGER,
+		userscore REAL,
+		recorded_at DATETIME NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_games_slug ON games(slug);
 	CREATE INDEX IF NOT EXISTS idx_crawl_history_lookup ON crawl_history(slug, date_str);
 	CREATE INDEX IF NOT EXISTS idx_game_platforms_game_id ON game_platforms(game_id);
+	CREATE INDEX IF NOT EXISTS idx_score_history_platform ON score_history(game_platform_id, recorded_at);
 	`
 	if _, err := d.db.Exec(ddl); err != nil {
 		return err
@@ -162,6 +172,54 @@ func (d *DB) migrate() error {
 	if colCount == 0 {
 		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`)
 	}
+
+	// Миграция существующей БД: добавляем колонку platform в game_reviews, если её нет
+	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('game_reviews') WHERE name = 'platform'`).Scan(&colCount)
+	if colCount == 0 {
+		_, _ = d.db.Exec(`ALTER TABLE game_reviews ADD COLUMN platform TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// Чистка некорректно привязанных отзывов: строка с известной платформой,
+	// лежащая под другой платформой игры (артефакт копирования отзывов во все платформы).
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE platform != ''
+		  AND platform != (SELECT gp.platform FROM game_platforms gp WHERE gp.id = game_reviews.game_platform_id);
+	`)
+
+	// Чистка легаси-отзывов старого парсера: в текст склеивались дата, оценка и автор
+	// ("Jan 5, 2024100 Parse\"Superb\""), а одна строка копировалась во все платформы.
+	// Такие строки не перезаписываются пересбором (другой content_hash), поэтому удаляются:
+	// ближайший цикл сбора вернет те же отзывы в чистом виде.
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][0-9]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][0-9]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][A-Za-z]*'
+		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][A-Za-z]*';
+	`)
+	// Схлопывание остаточных копий одного отзыва на нескольких платформах:
+	// в новой схеме отзыв живет только в своей платформе.
+	_, _ = d.db.Exec(`
+		DELETE FROM game_reviews
+		WHERE content_hash IN (
+			SELECT content_hash FROM game_reviews
+			GROUP BY content_hash HAVING COUNT(DISTINCT game_platform_id) > 1
+		) AND id NOT IN (
+			SELECT MIN(id) FROM game_reviews
+			GROUP BY content_hash
+		);
+	`)
+
+	// Чистка выдуманных резюме из старого фоллбэка (когда LLM была недоступна,
+	// генерировался шаблонный текст, нарушающий принцип честности данных).
+	_, _ = d.db.Exec(`
+		DELETE FROM platform_summaries
+		WHERE critic_pros LIKE '%высокое качество графики и проработку игрового мира%'
+		   OR critic_cons LIKE '%отдельные огрехи оптимизации и сложность освоения%'
+		   OR user_pros LIKE '%Игрокам нравится атмосфера, динамика и увлекательный сюжет%'
+		   OR user_cons LIKE '%жалуются на баланс и технические шероховатости%';
+	`)
 
 	// Очистка ошибочно прикрепленных нерелевантных видео и шаблонных заглушек из прошлых запусков
 	_, _ = d.db.Exec(`
@@ -446,8 +504,8 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-	INSERT OR IGNORE INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str)
-	VALUES (?, ?, ?, ?, ?, ?, ?);
+	INSERT OR IGNORE INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 	`)
 	if err != nil {
 		return 0, err
@@ -459,7 +517,7 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 		if r.ContentHash == "" {
 			r.ContentHash = domain.ComputeContentHash(r.ReviewType, r.Author, r.Text)
 		}
-		res, err := stmt.ExecContext(ctx, r.GamePlatformID, string(r.ReviewType), r.Author, r.Score, r.Text, r.ContentHash, r.DateStr)
+		res, err := stmt.ExecContext(ctx, r.GamePlatformID, string(r.ReviewType), r.Author, r.Score, r.Text, r.ContentHash, r.DateStr, r.Platform)
 		if err != nil {
 			return 0, err
 		}
@@ -477,7 +535,7 @@ func (d *DB) SaveReviews(ctx context.Context, reviews []domain.Review) (int, err
 
 func (d *DB) GetReviewsByPlatformID(ctx context.Context, platformID int64) ([]domain.Review, error) {
 	query := `
-	SELECT id, game_platform_id, review_type, author, score, text, content_hash, date_str
+	SELECT id, game_platform_id, review_type, author, score, text, content_hash, date_str, platform
 	FROM game_reviews WHERE game_platform_id = ?
 	ORDER BY id ASC;
 	`
@@ -491,7 +549,7 @@ func (d *DB) GetReviewsByPlatformID(ctx context.Context, platformID int64) ([]do
 	for rows.Next() {
 		var r domain.Review
 		var rType string
-		if err := rows.Scan(&r.ID, &r.GamePlatformID, &rType, &r.Author, &r.Score, &r.Text, &r.ContentHash, &r.DateStr); err != nil {
+		if err := rows.Scan(&r.ID, &r.GamePlatformID, &rType, &r.Author, &r.Score, &r.Text, &r.ContentHash, &r.DateStr, &r.Platform); err != nil {
 			return nil, err
 		}
 		r.ReviewType = domain.ReviewType(rType)
@@ -534,6 +592,101 @@ func (d *DB) GetPlatformSummary(ctx context.Context, platformID int64) (*domain.
 		return nil, err
 	}
 	return &s, nil
+}
+
+// RecordScorePoint фиксирует значения оценок платформы, если они отличаются от последней записи.
+func (d *DB) RecordScorePoint(ctx context.Context, platformID int64, metascore *int, userscore *float64) error {
+	latest, err := d.latestScorePoint(ctx, platformID)
+	if err != nil {
+		return err
+	}
+	if latest != nil &&
+		scorePtrEqual(latest.Metascore, metascore) &&
+		scorePtrEqual(latest.Userscore, userscore) {
+		return nil
+	}
+
+	query := `
+	INSERT INTO score_history (game_platform_id, metascore, userscore, recorded_at)
+	VALUES (?, ?, ?, ?);
+	`
+	_, err = d.db.ExecContext(ctx, query, platformID, metascore, userscore, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("record score point: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) latestScorePoint(ctx context.Context, platformID int64) (*domain.ScorePoint, error) {
+	var p domain.ScorePoint
+	var metascore sql.NullInt64
+	var userscore sql.NullFloat64
+	var recordedAt time.Time
+	err := d.db.QueryRowContext(ctx, `
+		SELECT metascore, userscore, recorded_at FROM score_history
+		WHERE game_platform_id = ?
+		ORDER BY recorded_at DESC, id DESC LIMIT 1;
+	`, platformID).Scan(&metascore, &userscore, &recordedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if metascore.Valid {
+		v := int(metascore.Int64)
+		p.Metascore = &v
+	}
+	if userscore.Valid {
+		v := userscore.Float64
+		p.Userscore = &v
+	}
+	p.RecordedAt = recordedAt
+	return &p, nil
+}
+
+func scorePtrEqual[T comparable](a, b *T) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func (d *DB) GetScoreHistory(ctx context.Context, platformID int64) ([]domain.ScorePoint, error) {
+	query := `
+	SELECT metascore, userscore, recorded_at
+	FROM score_history WHERE game_platform_id = ?
+	ORDER BY recorded_at ASC, id ASC;
+	`
+	rows, err := d.db.QueryContext(ctx, query, platformID)
+	if err != nil {
+		return nil, fmt.Errorf("get score history: %w", err)
+	}
+	defer rows.Close()
+
+	var list []domain.ScorePoint
+	for rows.Next() {
+		var p domain.ScorePoint
+		var metascore sql.NullInt64
+		var userscore sql.NullFloat64
+		if err := rows.Scan(&metascore, &userscore, &p.RecordedAt); err != nil {
+			return nil, err
+		}
+		if metascore.Valid {
+			v := int(metascore.Int64)
+			p.Metascore = &v
+		}
+		if userscore.Valid {
+			v := userscore.Float64
+			p.Userscore = &v
+		}
+		p.GamePlatformID = platformID
+		list = append(list, p)
+	}
+	return list, rows.Err()
 }
 
 func (d *DB) IsProcessedOnDate(ctx context.Context, slug, dateStr string) (bool, error) {

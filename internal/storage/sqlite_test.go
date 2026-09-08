@@ -2,9 +2,12 @@ package storage_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/stretchr/testify/require"
 	"metacrawler/internal/domain"
@@ -142,6 +145,285 @@ func TestReviews_DeduplicationAndTypes(t *testing.T) {
 	fetchedReviews, err := db.GetReviewsByPlatformID(ctx, platformID)
 	require.NoError(t, err)
 	require.Len(t, fetchedReviews, 2)
+}
+
+func TestReviews_PlatformStoredAndReturned(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "platform-reviews",
+		Title: "Platform Reviews Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	fetched, err := db.GetGameBySlug(ctx, "platform-reviews")
+	require.NoError(t, err)
+	require.Len(t, fetched.Platforms, 1)
+	platformID := fetched.Platforms[0].ID
+
+	reviews := []domain.Review{
+		{GamePlatformID: platformID, ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Great on PC.", Platform: "pc"},
+		{GamePlatformID: platformID, ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Runs well.", Platform: ""},
+	}
+	savedCount, err := db.SaveReviews(ctx, reviews)
+	require.NoError(t, err)
+	require.Equal(t, 2, savedCount)
+
+	fetchedReviews, err := db.GetReviewsByPlatformID(ctx, platformID)
+	require.NoError(t, err)
+	require.Len(t, fetchedReviews, 2)
+
+	byAuthor := make(map[string]domain.Review, len(fetchedReviews))
+	for _, r := range fetchedReviews {
+		byAuthor[r.Author] = r
+	}
+	require.Equal(t, "pc", byAuthor["IGN"].Platform)
+	require.Equal(t, "", byAuthor["User1"].Platform)
+}
+
+func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/migrate_reviews.db"
+
+	// Первый запуск: создаем схему и данные
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "mismatch-game",
+		Title: "Mismatch Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+			{Platform: "playstation-5"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "mismatch-game")
+	require.NoError(t, err)
+
+	var pcID, ps5ID int64
+	for _, p := range saved.Platforms {
+		switch p.Platform {
+		case "pc":
+			pcID = p.ID
+		case "playstation-5":
+			ps5ID = p.ID
+		}
+	}
+	require.NotZero(t, pcID)
+	require.NotZero(t, ps5ID)
+	require.NoError(t, db.Close())
+
+	// Вставляем некорректные строки напрямую: отзыв PC под платформой PS5.
+	// platform='' - легаси-строка, должна остаться.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform) VALUES
+			(?, 'critic', 'WrongPlatform', NULL, 'PC review on PS5.', 'hash-wrong', '', 'pc'),
+			(?, 'critic', 'LegacyCopy',   NULL, 'Legacy copy.',      'hash-legacy', '', ''),
+			(?, 'critic', 'RightPlatform',NULL, 'PS5 review.',       'hash-right',  '', 'playstation-5');
+	`, ps5ID, ps5ID, ps5ID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	revs, err := db2.GetReviewsByPlatformID(ctx, ps5ID)
+	require.NoError(t, err)
+
+	authors := make([]string, 0, len(revs))
+	for _, r := range revs {
+		authors = append(authors, r.Author)
+	}
+	require.ElementsMatch(t, []string{"LegacyCopy", "RightPlatform"}, authors)
+
+	// Отзывы PC-платформы не задеты
+	pcRevs, err := db2.GetReviewsByPlatformID(ctx, pcID)
+	require.NoError(t, err)
+	require.Empty(t, pcRevs)
+}
+
+func TestScoreHistory_RecordAndGet(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "history-game",
+		Title: "History Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "history-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	m1, m2 := 90, 92
+	u1, u2 := 8.4, 8.6
+
+	// Первая фиксация
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m1, &u1))
+	hist, err := db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+
+	// Без изменений - дубликат не пишется
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m1, &u1))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 1)
+
+	// Metascore изменился - новая точка
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m2, &u1))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 2)
+	require.Equal(t, 90, *hist[0].Metascore)
+	require.Equal(t, 92, *hist[1].Metascore)
+
+	// Userscore изменился - тоже новая точка
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &m2, &u2))
+	hist, err = db.GetScoreHistory(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, hist, 3)
+	require.InDelta(t, 8.6, *hist[2].Userscore, 0.001)
+}
+
+func TestScoreHistory_FirstPointNil(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		Slug:  "nil-history-game",
+		Title: "Nil History Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "nil-history-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	// TBD (nil) -> затем появилась оценка
+	score := 75
+	require.NoError(t, db.RecordScorePoint(ctx, platID, nil, nil))
+	hist, _ := db.GetScoreHistory(ctx, platID)
+	require.Len(t, hist, 1)
+	require.Nil(t, hist[0].Metascore)
+
+	require.NoError(t, db.RecordScorePoint(ctx, platID, &score, nil))
+	hist, _ = db.GetScoreHistory(ctx, platID)
+	require.Len(t, hist, 2)
+	require.Equal(t, 75, *hist[1].Metascore)
+}
+
+func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/migrate_summaries.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "fake-summaries-game",
+		Title: "Fake Summaries Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "fake-summaries-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+
+	// Платформа-подстава с фирменной фразой выдуманного фоллбэка
+	require.NoError(t, db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+		GamePlatformID: platID,
+		CriticPros:     "Критики отмечают высокое качество графики и проработку игрового мира.",
+		UserPros:       "Игрокам нравится атмосфера, динамика и увлекательный сюжет.",
+	}))
+	require.NoError(t, db.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	summary, err := db2.GetPlatformSummary(ctx, platID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "выдуманное резюме из старого фоллбэка должно быть удалено миграцией")
+}
+
+func TestMigrate_CleansLegacyGluedReviewsAndMultiPlatformDups(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/legacy_reviews.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+
+	game := &domain.Game{
+		Slug:  "legacy-game",
+		Title: "Legacy Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc"},
+			{Platform: "playstation-5"},
+		},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "legacy-game")
+	require.NoError(t, err)
+	var pcID, ps5ID int64
+	for _, p := range saved.Platforms {
+		switch p.Platform {
+		case "pc":
+			pcID = p.ID
+		case "playstation-5":
+			ps5ID = p.ID
+		}
+	}
+	require.NoError(t, db.Close())
+
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	// Легаси-мусор старого парсера: дата склеена с текстом, автор - с оценкой,
+	// копирование одной строки во все платформы (одинаковый hash).
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform) VALUES
+			(?, 'critic', 'tbd IGN', NULL, 'Jan 5, 2024100 Parse"Superb"',        'h-dup-glued', '', ''),
+			(?, 'critic', 'tbd IGN', NULL, 'Jan 5, 2024100 Parse"Superb"',        'h-dup-glued', '', ''),
+			(?, 'critic', 'tbd Push', NULL, 'Feb 8, 2024tbd Push"Also glued"',    'h-single-glued', '', ''),
+			(?, 'user',   'User1',   NULL, 'Почти чистый отзыв про дату May 5, 2023 был great.', 'h-clean-a', '', ''),
+			(?, 'user',   'UserB',   NULL, 'Another clean review text.',                          'h-clean-b', '', ''),
+			(?, 'user',   'UserB',   NULL, 'Another clean review text.',                          'h-clean-b', '', '');
+	`, ps5ID, pcID, ps5ID, pcID, pcID, ps5ID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// Повторное открытие запускает миграцию
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	// Склеенные тексты удалены (восстановятся чистыми при ближайшем пересборе)
+	revsPC, _ := db2.GetReviewsByPlatformID(ctx, pcID)
+	revsPS5, _ := db2.GetReviewsByPlatformID(ctx, ps5ID)
+
+	remaining := map[string]int{}
+	for _, r := range append(append([]domain.Review{}, revsPC...), revsPS5...) {
+		remaining[r.ContentHash]++
+	}
+	require.Equal(t, map[string]int{"h-clean-a": 1, "h-clean-b": 1}, remaining,
+		"склеенные строки удаляются, чистые дубли схлопываются до одной платформы")
 }
 
 func TestReviewsSummary_Upsert(t *testing.T) {
@@ -388,9 +670,9 @@ func TestListGames_Pagination(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		_ = db.UpsertGame(ctx, &domain.Game{
-			ID:    fmt.Sprintf("g-%d", i),
-			Slug:  fmt.Sprintf("game-%d", i),
-			Title: fmt.Sprintf("Game %d", i),
+			ID:          fmt.Sprintf("g-%d", i),
+			Slug:        fmt.Sprintf("game-%d", i),
+			Title:       fmt.Sprintf("Game %d", i),
 			ReleaseDate: fmt.Sprintf("2024-01-0%d", i),
 		})
 	}
@@ -415,4 +697,3 @@ func TestListGames_Pagination(t *testing.T) {
 	require.Len(t, p3, 1)
 	require.Equal(t, "Game 1", p3[0].Title)
 }
-

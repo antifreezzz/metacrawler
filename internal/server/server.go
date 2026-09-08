@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -87,6 +88,43 @@ func (s *Server) loadTemplates() {
 			}
 			return fmt.Sprintf("%.1f", *score)
 		},
+		"formatMetascoreDelta": func(cur *int, hist []domain.ScorePoint) string {
+			if cur == nil || len(hist) < 2 {
+				return ""
+			}
+			prev := hist[len(hist)-2].Metascore
+			if prev == nil {
+				return ""
+			}
+			delta := *cur - *prev
+			if delta == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%+d", delta)
+		},
+		"formatUserscoreDelta": func(cur *float64, hist []domain.ScorePoint) string {
+			if cur == nil || len(hist) < 2 {
+				return ""
+			}
+			prev := hist[len(hist)-2].Userscore
+			if prev == nil {
+				return ""
+			}
+			delta := *cur - *prev
+			if delta == 0 {
+				return ""
+			}
+			return fmt.Sprintf("%+.1f", delta)
+		},
+		"scoreDeltaDir": func(delta string) string {
+			switch {
+			case strings.HasPrefix(delta, "+"):
+				return "up"
+			case strings.HasPrefix(delta, "-"):
+				return "down"
+			}
+			return ""
+		},
 		"formatReleaseDate": func(dateStr string) string {
 			if dateStr == "" {
 				return ""
@@ -141,6 +179,77 @@ func (s *Server) routes() {
 	s.router.HandleFunc("POST /api/worker/run", s.RequireAuth(s.handleWorkerRun))
 	s.router.HandleFunc("GET /api/worker/status", s.RequireAuth(s.handleWorkerStatus))
 	s.router.HandleFunc("GET /api/worker/events", s.RequireAuth(s.handleWorkerEvents))
+
+	// Публичный RSS-фид последних добавленных игр
+	s.router.HandleFunc("GET /rss", s.handleRSS)
+}
+
+type rssChannel struct {
+	XMLName     xml.Name  `xml:"rss"`
+	Version     string    `xml:"version,attr"`
+	Title       string    `xml:"channel>title"`
+	Link        string    `xml:"channel>link"`
+	Description string    `xml:"channel>description"`
+	Language    string    `xml:"channel>language"`
+	LastBuild   string    `xml:"channel>lastBuildDate"`
+	Items       []rssItem `xml:"channel>item"`
+}
+
+type rssItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	GUID        string `xml:"guid"`
+	PubDate     string `xml:"pubDate"`
+	Description string `xml:"description"`
+}
+
+func (s *Server) handleRSS(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	games, err := s.db.ListGames(ctx, storage.ListFilter{Sort: "newest", Limit: 30})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]rssItem, 0, len(games))
+	for _, g := range games {
+		link := fmt.Sprintf("/games/%s", g.Slug)
+		desc := g.Description
+		if desc == "" {
+			desc = "Описание пока не собрано."
+		}
+		pubDate := g.CreatedAt.UTC().Format(time.RFC1123Z)
+		items = append(items, rssItem{
+			Title:       g.Title,
+			Link:        link,
+			GUID:        link,
+			PubDate:     pubDate,
+			Description: desc,
+		})
+	}
+
+	feed := rssChannel{
+		XMLName:     xml.Name{Local: "rss"},
+		Version:     "2.0",
+		Title:       "Metacrawler — новые игры",
+		Link:        "/",
+		Description: "Последние добавленные игры из каталога Metacritic с оценками и ИИ-анализом отзывов.",
+		Language:    "ru",
+		LastBuild:   time.Now().UTC().Format(time.RFC1123Z),
+		Items:       items,
+	}
+
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(xml.Header))
+	enc := xml.NewEncoder(w)
+	enc.Indent("", "  ")
+	if err := enc.Encode(feed); err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("\n"))
 }
 
 type PaginationInfo struct {
@@ -418,6 +527,18 @@ type DetailPageData struct {
 	SimilarGames []domain.Game
 	YouTube      *domain.YouTubeAnalysis
 	IsAdmin      bool
+	OGBaseURL    string
+}
+
+// schemeFromRequest определяет схему публичного URL (с учетом обратного прокси).
+func schemeFromRequest(r *http.Request) string {
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		return p
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
@@ -436,11 +557,12 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Подтягиваем резюме отзывов для каждой платформы
+	// Подтягиваем резюме и историю оценок для каждой платформы
 	for i := range game.Platforms {
 		summary, _ := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID)
 		reviews, _ := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
 		game.Platforms[i].Reviews = reviews
+		game.Platforms[i].ScoreHistory, _ = s.db.GetScoreHistory(ctx, game.Platforms[i].ID)
 		if summary != nil {
 			game.Platforms[i].Summary = summary
 		} else if len(reviews) > 0 {
@@ -497,6 +619,7 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		SimilarGames: similarGames,
 		YouTube:      ytAnalysis,
 		IsAdmin:      s.isAuthenticated(r),
+		OGBaseURL:    schemeFromRequest(r) + "://" + r.Host,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
