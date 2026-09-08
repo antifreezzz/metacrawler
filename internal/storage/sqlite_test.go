@@ -608,9 +608,9 @@ func TestListGames_Pagination(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		_ = db.UpsertGame(ctx, &domain.Game{
-			ID:    fmt.Sprintf("g-%d", i),
-			Slug:  fmt.Sprintf("game-%d", i),
-			Title: fmt.Sprintf("Game %d", i),
+			ID:          fmt.Sprintf("g-%d", i),
+			Slug:        fmt.Sprintf("game-%d", i),
+			Title:       fmt.Sprintf("Game %d", i),
 			ReleaseDate: fmt.Sprintf("2024-01-0%d", i),
 		})
 	}
@@ -635,4 +635,3 @@ func TestListGames_Pagination(t *testing.T) {
 	require.Len(t, p3, 1)
 	require.Equal(t, "Game 1", p3[0].Title)
 }
-

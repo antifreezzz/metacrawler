@@ -248,6 +248,3 @@ func TestSummarizeReviews_InvalidJSON_ReturnsError(t *testing.T) {
 	require.Error(t, err, "нераспарсимый ответ LLM должен возвращаться ошибкой, без выдуманного резюме")
 	require.Nil(t, res)
 }
-
-
-

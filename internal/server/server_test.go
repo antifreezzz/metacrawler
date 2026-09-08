@@ -365,9 +365,9 @@ func TestIndexHandler_Pagination(t *testing.T) {
 
 	for i := 1; i <= 30; i++ {
 		_ = db.UpsertGame(ctx, &domain.Game{
-			ID:    fmt.Sprintf("g-%d", i),
-			Slug:  fmt.Sprintf("game-%d", i),
-			Title: fmt.Sprintf("Game %02d", i),
+			ID:          fmt.Sprintf("g-%d", i),
+			Slug:        fmt.Sprintf("game-%d", i),
+			Title:       fmt.Sprintf("Game %02d", i),
 			ReleaseDate: fmt.Sprintf("2024-01-%02d", i),
 		})
 	}
@@ -518,4 +518,3 @@ func TestLogin_OpenRedirectPrevention(t *testing.T) {
 	require.Equal(t, http.StatusFound, recValid.Code)
 	require.Equal(t, "/games/elden-ring", recValid.Header().Get("Location"))
 }
-
