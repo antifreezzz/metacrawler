@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"bytes"
+	"html"
 	"net/url"
 	"strconv"
 	"strings"
@@ -140,7 +141,9 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 				game.Title = strings.TrimSpace(parsed.Get("name").String())
 			}
 			if game.Description == "" {
-				game.Description = strings.TrimSpace(parsed.Get("description").String())
+				// Metacritic кладёт в JSON-LD сырые HTML-сущности (&quot; &bull;),
+				// блок живёт внутри <script> и HTML-парсер его не декодирует.
+				game.Description = html.UnescapeString(strings.TrimSpace(parsed.Get("description").String()))
 			}
 			if game.CoverURL == "" {
 				game.CoverURL = strings.TrimSpace(parsed.Get("image").String())
