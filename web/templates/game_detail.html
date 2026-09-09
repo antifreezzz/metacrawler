@@ -1,6 +1,6 @@
 {{define "title"}}{{.Game.Title}} — Metacrawler{{end}}
 {{define "og-title"}}<meta property="og:title" content="{{.Game.Title}} — Metacrawler" />{{end}}
-{{define "og-description"}}<meta property="og:description" content="{{.Game.Description}}" />{{end}}
+{{define "og-description"}}<meta property="og:description" content="{{oneline .Game.Description}}" />{{end}}
 {{define "og-image"}}{{if .Game.CoverURL}}<meta property="og:image" content="{{.Game.CoverURL}}" />{{end}}{{end}}
 {{define "og-url"}}<meta property="og:url" content="{{.OGBaseURL}}/games/{{.Game.Slug}}" />{{end}}
 {{define "content"}}
@@ -42,7 +42,9 @@
         {{if .Game.ReleaseDate}}<span class="meta-dot">·</span><span>Дата выхода: <strong style="color: var(--fg); font-weight: 500;">{{formatReleaseDate .Game.ReleaseDate}}</strong></span>{{end}}
       </div>
       {{if .Game.Description}}
-      <p class="body-copy">{{.Game.Description}}</p>
+      <div class="body-copy">
+        {{range splitParagraphs .Game.Description}}<p>{{.}}</p>{{end}}
+      </div>
       {{end}}
       <div class="rating-grid">
         {{range .Game.Platforms}}
