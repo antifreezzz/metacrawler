@@ -141,9 +141,7 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 				game.Title = strings.TrimSpace(parsed.Get("name").String())
 			}
 			if game.Description == "" {
-				// Metacritic кладёт в JSON-LD сырые HTML-сущности (&quot; &bull;),
-				// блок живёт внутри <script> и HTML-парсер его не декодирует.
-				game.Description = html.UnescapeString(strings.TrimSpace(parsed.Get("description").String()))
+				game.Description = cleanJSONLDText(parsed.Get("description").String())
 			}
 			if game.CoverURL == "" {
 				game.CoverURL = strings.TrimSpace(parsed.Get("image").String())
@@ -443,6 +441,31 @@ func normalizePlatformName(raw string) string {
 	default:
 		return strings.ReplaceAll(raw, " ", "-")
 	}
+}
+
+// cleanJSONLDText приводит текст из JSON-LD Metacritic к читаемому виду:
+// декодирует сырые HTML-сущности (&quot; &bull;), схлопывает повторные пробелы/табы,
+// сохраняя переносы строк как разделители абзацев.
+func cleanJSONLDText(raw string) string {
+	raw = html.UnescapeString(raw)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range raw {
+		if r == ' ' || r == '\t' {
+			if !prevSpace {
+				b.WriteByte(' ')
+			}
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // NormalizeReleaseDate приводит строки дат ("2022-02-25", "Feb 25, 2022", "February 25, 2022", "2022-02-25T00:00:00.000Z") к формату "YYYY-MM-DD".

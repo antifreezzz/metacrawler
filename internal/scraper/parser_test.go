@@ -151,13 +151,14 @@ func TestParseGameDetails_ReviewPlatform(t *testing.T) {
 func TestParseGameDetails_UnescapesHTMLEntities(t *testing.T) {
 	// Metacritic кладёт в JSON-LD сырые HTML-сущности (&quot; &bull; &amp;),
 	// т.к. блок живёт внутри <script> и HTML-парсер его не декодирует.
+	// Заодно схлопываем многократные пробелы, переносы абзацев сохраняем.
 	data := []byte(`<!DOCTYPE html><html><head>
-<script type="application/ld+json">{"@type":"VideoGame","name":"Fun Puzzle","description":"A game &quot;Move the jewels&quot; &bull; features &amp; modes","image":"https://example.com/cover.jpg","datePublished":"2026-09-08"}</script>
+<script type="application/ld+json">{"@type":"VideoGame","name":"Fun Puzzle","description":"A game  &quot;Move the jewels&quot; &bull; features &amp;   modes.\n\nSecond  paragraph.","image":"https://example.com/cover.jpg","datePublished":"2026-09-08"}</script>
 </head><body></body></html>`)
 
 	game, _, err := scraper.ParseGameDetails("fun-puzzle", data)
 	require.NoError(t, err)
-	require.Equal(t, `A game "Move the jewels" • features & modes`, game.Description)
+	require.Equal(t, "A game \"Move the jewels\" • features & modes.\n\nSecond paragraph.", game.Description)
 }
 
 func TestNormalizeReleaseDate(t *testing.T) {
