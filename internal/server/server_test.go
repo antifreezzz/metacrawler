@@ -118,6 +118,34 @@ func TestIndexHandler_OpenGraphDefaults(t *testing.T) {
 	require.Contains(t, body, `rel="icon"`)
 }
 
+func TestGameDetailHandler_DescriptionParagraphs(t *testing.T) {
+	// Описание из JSON-LD Metacritic содержит переносы абзацев (\n\n),
+	// каждое \"перенос-разделённое\" предложение должно стать отдельным <p>.
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-para",
+		Slug:        "para-game",
+		Title:       "Para Game",
+		Description: "First paragraph.\n\nSecond paragraph.\n\nThird one.",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	req := httptest.NewRequest("GET", "/games/para-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, "<p>First paragraph.</p>")
+	require.Contains(t, body, "<p>Second paragraph.</p>")
+	require.Contains(t, body, "<p>Third one.</p>")
+	// Сырые переносы и слитный текст в одном <p> не должны остаться
+	require.NotContains(t, body, "paragraph.\n\nSecond")
+}
+
 func TestGameDetailHandler_OpenGraphTags(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()

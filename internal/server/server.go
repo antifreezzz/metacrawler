@@ -143,6 +143,18 @@ func (s *Server) loadTemplates() {
 			}
 			return t.Format("02.01.2006")
 		},
+		"splitParagraphs": func(text string) []string {
+			var out []string
+			for _, p := range strings.Split(text, "\n") {
+				if p = strings.TrimSpace(p); p != "" {
+					out = append(out, p)
+				}
+			}
+			return out
+		},
+		"oneline": func(text string) string {
+			return strings.Join(strings.Fields(text), " ")
+		},
 	}
 
 	layout := filepath.Join(tmplDir, "layout.html")
