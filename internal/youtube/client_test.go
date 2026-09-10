@@ -34,6 +34,32 @@ func TestParseTimedTextXML(t *testing.T) {
 	require.Contains(t, text, "The graphics here are absolutely breathtaking!")
 }
 
+func TestParseDuration(t *testing.T) {
+	require.Equal(t, 3753, youtube.ParseDuration("1:02:33"))
+	require.Equal(t, 201, youtube.ParseDuration("3:21"))
+	require.Equal(t, 45296, youtube.ParseDuration("12:34:56"))
+	require.Equal(t, 45, youtube.ParseDuration("0:45"))
+	require.Equal(t, 0, youtube.ParseDuration(""))
+	require.Equal(t, 0, youtube.ParseDuration("LIVE"))
+	require.Equal(t, 0, youtube.ParseDuration("garbage"))
+}
+
+func TestIsTrailer(t *testing.T) {
+	// Трейлеры и промо-ролики
+	require.True(t, youtube.IsTrailer("Elden Ring - Official Launch Trailer"))
+	require.True(t, youtube.IsTrailer("Elden Ring Gameplay Reveal"))
+	require.True(t, youtube.IsTrailer("Elden Ring Announcement Teaser"))
+	require.True(t, youtube.IsTrailer("Elden Ring - Pre-Order Trailer"))
+	require.True(t, youtube.IsTrailer("Elden Ring TV Spot"))
+	require.True(t, youtube.IsTrailer("Elden Ring - Coming Soon"))
+
+	// Настоящие летсплеи не должны отбрасываться
+	require.False(t, youtube.IsTrailer("Elden Ring Gameplay Walkthrough Part 1"))
+	require.False(t, youtube.IsTrailer("Elden Ring Full Playthrough"))
+	require.False(t, youtube.IsTrailer("Elden Ring Let's Play Episode 3"))
+	require.False(t, youtube.IsTrailer("Elden Ring Launch Day Livestream"))
+}
+
 func TestParseSearchResults(t *testing.T) {
 	mockHTML := `<!DOCTYPE html><html><body><script>
 	var ytInitialData = {
@@ -54,6 +80,24 @@ func TestParseSearchResults(t *testing.T) {
 									},
 									{
 										"videoRenderer": {
+											"videoId": "vid_trailer",
+											"title": {"runs": [{"text": "ANT SIMULATOR: stock market game - Official Trailer"}]},
+											"ownerText": {"runs": [{"text": "Official Publisher"}]},
+											"viewCountText": {"simpleText": "9,000,000 views"},
+											"lengthText": {"simpleText": "2:15"}
+										}
+									},
+									{
+										"videoRenderer": {
+											"videoId": "vid_short",
+											"title": {"runs": [{"text": "ANT SIMULATOR: stock market game - First Gameplay"}]},
+											"ownerText": {"runs": [{"text": "Quick Clips"}]},
+											"viewCountText": {"simpleText": "5,000,000 views"},
+											"lengthText": {"simpleText": "4:30"}
+										}
+									},
+									{
+										"videoRenderer": {
 											"videoId": "vid_ant",
 											"title": {"runs": [{"text": "ANT SIMULATOR: stock market game - First Walkthrough"}]},
 											"ownerText": {"runs": [{"text": "Indie Explorer"}]},
@@ -70,7 +114,7 @@ func TestParseSearchResults(t *testing.T) {
 	};
 	</script></body></html>`
 
-	// 1. Поиск для ANT SIMULATOR должен отбросить Pocket Ants и выбрать vid_ant
+	// 1. Трейлер (9M просмотров) и короткий ролик (4:30) отбрасываются, выбирается vid_ant
 	best, err := youtube.ParseTopVideoFromSearchHTML([]byte(mockHTML), "ANT SIMULATOR: stock market game")
 	require.NoError(t, err)
 	require.NotNil(t, best)
@@ -81,6 +125,39 @@ func TestParseSearchResults(t *testing.T) {
 	_, errMismatch := youtube.ParseTopVideoFromSearchHTML([]byte(mockHTML), "Escape from Company")
 	require.Error(t, errMismatch)
 	require.Contains(t, errMismatch.Error(), "no relevant video found")
+}
+
+func TestParseSearchResultsKeepsLiveStream(t *testing.T) {
+	mockHTML := `<!DOCTYPE html><html><body><script>
+	var ytInitialData = {
+		"contents": {
+			"twoColumnSearchResultsRenderer": {
+				"primaryContents": {
+					"sectionListRenderer": {
+						"contents": [{
+							"itemSectionRenderer": {
+								"contents": [{
+									"videoRenderer": {
+										"videoId": "vid_live",
+										"title": {"runs": [{"text": "ANT SIMULATOR: stock market game - Full Walkthrough"}]},
+										"ownerText": {"runs": [{"text": "Indie Explorer"}]},
+										"viewCountText": {"simpleText": "42,000 views"}
+									}
+								}]
+							}
+						}]
+					}
+				}
+			}
+		}
+	};
+	</script></body></html>`
+
+	// Отсутствие lengthText (например, live-трансляция) не должно отбрасывать видео
+	best, err := youtube.ParseTopVideoFromSearchHTML([]byte(mockHTML), "ANT SIMULATOR: stock market game")
+	require.NoError(t, err)
+	require.NotNil(t, best)
+	require.Equal(t, "vid_live", best.VideoID)
 }
 
 func TestIsVideoRelevant(t *testing.T) {
