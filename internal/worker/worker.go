@@ -26,6 +26,7 @@ type ScraperClient interface {
 
 type LLMClient interface {
 	SummarizeReviews(ctx context.Context, title, platform string, critics, users []domain.Review) (*llm.SummaryResult, error)
+	TranslateToRussian(ctx context.Context, text string) (string, error)
 	GetEmbedding(ctx context.Context, text string) ([]float32, error)
 	HasAPIKey() bool
 	ChatModel() string
@@ -50,20 +51,21 @@ var ErrGameBusy = errors.New("game is already being processed")
 
 // RecrawlOptions определяет, какие части данных игры нужно пересобрать.
 type RecrawlOptions struct {
-	Scrape    bool // карточка игры и отзывы с Metacritic
-	Summaries bool // LLM-резюме отзывов по платформам
-	YouTube   bool // поиск летсплея, транскрипт и саммари
-	Embedding bool // вектор для подбора похожих игр
+	Scrape      bool // карточка игры и отзывы с Metacritic
+	Summaries   bool // LLM-резюме отзывов по платформам
+	YouTube     bool // поиск летсплея, транскрипт и саммари
+	Embedding   bool // вектор для подбора похожих игр
+	Translation bool // русский перевод описания игры
 }
 
 // AllRecrawlOptions возвращает пересбор всех частей.
 func AllRecrawlOptions() RecrawlOptions {
-	return RecrawlOptions{Scrape: true, Summaries: true, YouTube: true, Embedding: true}
+	return RecrawlOptions{Scrape: true, Summaries: true, YouTube: true, Embedding: true, Translation: true}
 }
 
 // Empty сообщает, что ни одна часть не выбрана.
 func (o RecrawlOptions) Empty() bool {
-	return !o.Scrape && !o.Summaries && !o.YouTube && !o.Embedding
+	return !o.Scrape && !o.Summaries && !o.YouTube && !o.Embedding && !o.Translation
 }
 
 // ParseRecrawlOptions разбирает список частей ("scrape,summaries,youtube,embedding").
@@ -84,6 +86,8 @@ func ParseRecrawlOptions(raw string) RecrawlOptions {
 			opts.YouTube = true
 		case "embedding", "embed":
 			opts.Embedding = true
+		case "translation", "translate", "trans":
+			opts.Translation = true
 		case "all":
 			return AllRecrawlOptions()
 		}
@@ -105,6 +109,9 @@ func (o RecrawlOptions) String() string {
 	}
 	if o.Embedding {
 		parts = append(parts, "embedding")
+	}
+	if o.Translation {
+		parts = append(parts, "translation")
 	}
 	if len(parts) == 0 {
 		return "none"
@@ -732,7 +739,25 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		}
 	}
 
-	// 6. Эмбеддинг и YouTube-анализ не зависят друг от друга - выполняем параллельно
+	// 6. Русский перевод описания (кэшируется в games.description_ru).
+	// В обычном цикле выполняется только если перевода ещё нет; force перезаписывает.
+	if opts.Translation && strings.TrimSpace(savedGame.Description) != "" {
+		if force || strings.TrimSpace(savedGame.DescriptionRU) == "" {
+			translated, trErr := m.llm.TranslateToRussian(ctx, savedGame.Description)
+			if trErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [LLM] Ошибка перевода описания: %v", trErr))
+			} else if strings.TrimSpace(translated) != "" {
+				if err := m.db.SaveGameTranslation(ctx, savedGame.ID, translated); err != nil {
+					m.addLog(fmt.Sprintf("  ⚠️ [DB] Ошибка сохранения перевода описания: %v", err))
+				} else {
+					savedGame.DescriptionRU = translated
+					m.addLog("  🌐 [LLM] Описание игры переведено на русский")
+				}
+			}
+		}
+	}
+
+	// 7. Эмбеддинг и YouTube-анализ не зависят друг от друга - выполняем параллельно
 	var analysisWG sync.WaitGroup
 
 	if opts.Embedding {
@@ -753,7 +778,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 
 	analysisWG.Wait()
 
-	// 7. Помечаем игру как обработанную (только при полном сборе)
+	// 8. Помечаем игру как обработанную (только при полном сборе)
 	if opts.Scrape {
 		if today != "" {
 			_ = m.db.MarkProcessed(ctx, slug, today)
