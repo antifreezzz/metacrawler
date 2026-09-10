@@ -843,6 +843,72 @@
       .toast.error {
         border-color: #bc8376;
       }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: #0009;
+      }
+      .modal-backdrop[hidden] {
+        display: none;
+      }
+      .modal {
+        width: 100%;
+        max-width: 420px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 24px 80px #000a;
+      }
+      .modal h3 {
+        font-size: 18px;
+        font-weight: 650;
+        margin-bottom: 4px;
+      }
+      .modal-sub {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 16px;
+      }
+      .modal-option {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        cursor: pointer;
+        transition: border-color 0.15s ease;
+      }
+      .modal-option:hover {
+        border-color: var(--accent);
+      }
+      .modal-option input {
+        margin-top: 3px;
+        accent-color: var(--accent);
+      }
+      .modal-option span {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .modal-option small {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 16px;
+      }
       .metric-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1246,6 +1312,32 @@
         ><span>Данные Metacritic · Анализ отзывов с помощью ИИ</span>
       </div>
     </footer>
+    <div id="recrawl-modal" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="recrawl-modal-title">
+        <h3 id="recrawl-modal-title">Что пересобрать?</h3>
+        <p class="modal-sub" id="recrawl-modal-game"></p>
+        <label class="modal-option">
+          <input type="checkbox" value="scrape" checked />
+          <span>Сбор с Metacritic<small>Карточка игры и отзывы</small></span>
+        </label>
+        <label class="modal-option">
+          <input type="checkbox" value="summaries" checked />
+          <span>Резюме отзывов<small>LLM-анализ критиков и игроков</small></span>
+        </label>
+        <label class="modal-option">
+          <input type="checkbox" value="youtube" checked />
+          <span>Летсплей YouTube<small>Поиск, транскрипт и саммари</small></span>
+        </label>
+        <label class="modal-option">
+          <input type="checkbox" value="embedding" checked />
+          <span>Похожие игры<small>Вектор для подбора</small></span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="button" id="recrawl-cancel">Отмена</button>
+          <button type="button" class="button primary" id="recrawl-confirm">Пересобрать</button>
+        </div>
+      </div>
+    </div>
     <div id="toast-container" role="status" aria-live="polite"></div>
     <script>
       document.querySelectorAll(".nav a").forEach((a) => {
@@ -1262,6 +1354,89 @@
         document.getElementById("toast-container").appendChild(toast);
         setTimeout(() => toast.remove(), 5000);
       }
+      const recrawlModal = document.getElementById("recrawl-modal");
+      let recrawlSlug = null;
+      function openRecrawlModal(slug, title) {
+        recrawlSlug = slug;
+        document.getElementById("recrawl-modal-game").textContent =
+          title ? "Игра: " + title : "Игра: " + slug;
+        recrawlModal.hidden = false;
+      }
+      function closeRecrawlModal() {
+        recrawlModal.hidden = true;
+        recrawlSlug = null;
+      }
+      document.addEventListener("click", (evt) => {
+        const btn = evt.target.closest("[data-recrawl-slug]");
+        if (!btn) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        openRecrawlModal(btn.dataset.recrawlSlug, btn.dataset.recrawlTitle);
+      });
+      document
+        .getElementById("recrawl-cancel")
+        .addEventListener("click", closeRecrawlModal);
+      recrawlModal.addEventListener("click", (evt) => {
+        if (evt.target === recrawlModal) closeRecrawlModal();
+      });
+      document
+        .getElementById("recrawl-confirm")
+        .addEventListener("click", async () => {
+          const parts = Array.from(
+            recrawlModal.querySelectorAll("input[type=checkbox]:checked"),
+          ).map((c) => c.value);
+          if (parts.length === 0) {
+            showToast("Выберите хотя бы одну часть для пересбора.", true);
+            return;
+          }
+          const slug = recrawlSlug;
+          closeRecrawlModal();
+          try {
+            const resp = await fetch(
+              `/api/games/${encodeURIComponent(slug)}/recrawl?parts=${parts.join(",")}`,
+              { method: "POST", headers: { "HX-Request": "true" } },
+            );
+            if (resp.status === 409) {
+              showToast("⚠️ Пересбор для этой игры уже выполняется.", true);
+              return;
+            }
+            if (!resp.ok) {
+              showToast("Не удалось запустить пересбор. Попробуйте ещё раз.", true);
+              return;
+            }
+            showToast("🔄 Пересбор запущен. Ждём завершения…");
+            pollRecrawlStatus(slug);
+          } catch {
+            showToast("Не удалось запустить пересбор. Попробуйте ещё раз.", true);
+          }
+        });
+      async function pollRecrawlStatus(slug, attempt = 0) {
+        if (attempt > 100) return;
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const resp = await fetch(
+            `/api/games/${encodeURIComponent(slug)}/recrawl/status`,
+            { headers: { "HX-Request": "true" } },
+          );
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (data.status === "done") {
+            showToast("🏁 Пересбор завершён.");
+            setTimeout(() => location.reload(), 1000);
+            return;
+          }
+          if (data.status === "error") {
+            showToast(
+              "❌ Ошибка пересбора: " + (data.error || "неизвестная ошибка"),
+              true,
+            );
+            return;
+          }
+          pollRecrawlStatus(slug, attempt + 1);
+        } catch {
+          pollRecrawlStatus(slug, attempt + 1);
+        }
+      }
       document.body.addEventListener("htmx:afterRequest", (evt) => {
         const path = evt.detail.requestConfig?.path || "";
         if (path.startsWith("/api/worker/run"))
@@ -1271,16 +1446,7 @@
               : "Не удалось запустить сбор. Попробуйте ещё раз.",
             !evt.detail.successful,
           );
-        if (path.includes("/recrawl")) {
-          const status = evt.detail.xhr?.status;
-          if (status === 202) {
-            showToast("🔄 Пересбор игры запущен в фоне. За ходом сбора можно следить в Мониторинге.");
-          } else if (status === 409) {
-            showToast("⚠️ Пересбор для этой игры уже выполняется в фоне.", true);
-          } else if (!evt.detail.successful) {
-            showToast("Не удалось запустить пересбор. Попробуйте ещё раз.", true);
-          }
-        } else if (path.startsWith("/api/games") && !evt.detail.successful) {
+        else if (path.startsWith("/api/games") && !evt.detail.successful) {
           showToast("Не удалось обновить каталог. Попробуйте ещё раз.", true);
         }
         if (evt.detail.target?.id === "games-list")

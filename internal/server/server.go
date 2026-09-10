@@ -185,6 +185,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("GET /api/games", s.handleGamesList)
 	s.router.HandleFunc("GET /games/{slug}", s.handleGameDetail)
 	s.router.HandleFunc("POST /api/games/{slug}/recrawl", s.RequireAuth(s.handleGameRecrawl))
+	s.router.HandleFunc("GET /api/games/{slug}/recrawl/status", s.RequireAuth(s.handleRecrawlStatus))
 
 	// Защищенные маршруты администрирования и управления сбором
 	s.router.HandleFunc("GET /monitoring", s.RequireAuth(s.handleMonitoring))
@@ -504,19 +505,19 @@ func (s *Server) handleGamesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGameRecrawl(w http.ResponseWriter, r *http.Request) {
-	slug := r.PathValue("slug")
-	if slug == "" {
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) >= 3 {
-			slug = parts[2]
-		}
-	}
+	slug := slugFromRequest(r)
 	if slug == "" {
 		http.Error(w, "slug is required", http.StatusBadRequest)
 		return
 	}
 
-	started, err := s.workerMgr.RecrawlGameAsync(slug)
+	opts := worker.ParseRecrawlOptions(r.URL.Query().Get("parts"))
+	if opts.Empty() {
+		http.Error(w, "no recrawl parts selected", http.StatusBadRequest)
+		return
+	}
+
+	started, err := s.workerMgr.RecrawlGameAsync(slug, opts)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("recrawl error: %v", err), http.StatusInternalServerError)
 		return
@@ -531,7 +532,35 @@ func (s *Server) handleGameRecrawl(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"status":"accepted","slug":"` + slug + `","message":"Пересбор запущен в фоне"}`))
+	_, _ = w.Write([]byte(`{"status":"accepted","slug":"` + slug + `","options":"` + opts.String() + `","message":"Пересбор запущен в фоне"}`))
+}
+
+func (s *Server) handleRecrawlStatus(w http.ResponseWriter, r *http.Request) {
+	slug := slugFromRequest(r)
+	if slug == "" {
+		http.Error(w, "slug is required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	state, ok := s.workerMgr.RecrawlStatus(slug)
+	if !ok {
+		_, _ = w.Write([]byte(`{"status":"idle"}`))
+		return
+	}
+	_ = json.NewEncoder(w).Encode(state)
+}
+
+// slugFromRequest извлекает slug игры из пути (PathValue или ручной разбор).
+func slugFromRequest(r *http.Request) string {
+	if slug := r.PathValue("slug"); slug != "" {
+		return slug
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) >= 3 {
+		return parts[2]
+	}
+	return ""
 }
 
 type DetailPageData struct {
