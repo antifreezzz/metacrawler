@@ -710,6 +710,21 @@
       .body-copy p + p {
         margin-top: 14px;
       }
+      .original-description {
+        margin-top: 14px;
+        border-top: 1px dashed var(--line);
+        padding-top: 10px;
+      }
+      .original-description summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .original-description[open] summary {
+        margin-bottom: 10px;
+      }
       .rating-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
@@ -1331,6 +1346,10 @@
         <label class="modal-option">
           <input type="checkbox" value="embedding" checked />
           <span>Похожие игры<small>Вектор для подбора</small></span>
+        </label>
+        <label class="modal-option">
+          <input type="checkbox" value="translation" checked />
+          <span>Перевод описания<small>Русская версия текста</small></span>
         </label>
         <div class="modal-actions">
           <button type="button" class="button" id="recrawl-cancel">Отмена</button>
