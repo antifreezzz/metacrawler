@@ -3,12 +3,16 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"metacrawler/internal/domain"
 	"metacrawler/internal/llm"
 )
@@ -270,4 +274,100 @@ func TestSummarizeReviews_InvalidJSON_ReturnsError(t *testing.T) {
 	res, err := client.SummarizeReviews(context.Background(), "Test Game", "pc", criticReviews, userReviews)
 	require.Error(t, err, "нераспарсимый ответ LLM должен возвращаться ошибкой, без выдуманного резюме")
 	require.Nil(t, res)
+}
+
+func TestSummarizeVideoTranscriptWithLimit_TruncatesHeadTail(t *testing.T) {
+	var gotPrompt string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotPrompt = gjson.GetBytes(body, "messages.1.content").String()
+
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "ok summary"}},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o-mini", "local")
+
+	transcript := "0123456789abcdefghijklmnopqrstuvwxyz" // 36 рун
+	summary, err := client.SummarizeVideoTranscriptWithLimit(context.Background(), "Game", "Chan", "Video", transcript, 10)
+	require.NoError(t, err)
+	require.Equal(t, "ok summary", summary)
+	require.Contains(t, gotPrompt, "01234 … vwxyz")
+	require.NotContains(t, gotPrompt, "fghij", "середина должна отбрасываться, а хвост с вердиктом - сохраняться")
+}
+
+func TestSummarizeVideoTranscriptWithLimit_TruncatesRuneSafe(t *testing.T) {
+	var gotPrompt string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotPrompt = gjson.GetBytes(body, "messages.1.content").String()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o-mini", "local")
+
+	transcript := strings.Repeat("аб", 50) // 100 рун
+	_, err := client.SummarizeVideoTranscriptWithLimit(context.Background(), "Game", "Chan", "Video", transcript, 20)
+	require.NoError(t, err)
+	require.True(t, utf8.ValidString(gotPrompt), "обрезка не должна разрезать многобайтовые руны")
+	require.Contains(t, gotPrompt, strings.Repeat("аб", 5)+" … "+strings.Repeat("аб", 5))
+}
+
+func TestSummarizeVideoTranscriptWithLimit_ZeroDisablesTruncation(t *testing.T) {
+	var gotPrompt string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotPrompt = gjson.GetBytes(body, "messages.1.content").String()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o-mini", "local")
+
+	transcript := strings.Repeat("x", 20000)
+	_, err := client.SummarizeVideoTranscriptWithLimit(context.Background(), "Game", "Chan", "Video", transcript, 0)
+	require.NoError(t, err)
+	require.Contains(t, gotPrompt, transcript)
+}
+
+func TestSummarizeVideoTranscriptWithLimit_EmptyTranscript(t *testing.T) {
+	client := llm.NewClient("http://127.0.0.1:1/v1", "test-key", "gpt-4o-mini", "local")
+	_, err := client.SummarizeVideoTranscriptWithLimit(context.Background(), "Game", "Chan", "Video", "   ", 100)
+	require.Error(t, err)
+}
+
+func TestSummarizeVideoTranscript_UsesConfiguredMaxChars(t *testing.T) {
+	var gotPrompt string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotPrompt = gjson.GetBytes(body, "messages.1.content").String()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o-mini", "local")
+	client.SetTranscriptMaxChars(10)
+
+	transcript := "0123456789abcdefghijklmnopqrstuvwxyz" // 36 рун
+	_, err := client.SummarizeVideoTranscript(context.Background(), "Game", "Chan", "Video", transcript)
+	require.NoError(t, err)
+	require.Contains(t, gotPrompt, "01234 … vwxyz")
 }

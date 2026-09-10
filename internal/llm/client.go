@@ -28,15 +28,16 @@ type SummaryResult struct {
 var ErrLLMUnavailable = errors.New("llm unavailable: summary cannot be generated")
 
 type Client struct {
-	baseURL          string
-	apiKey           string
-	chatModel        string
-	embeddingEngine  string // "local" or "remote"
-	embeddingBaseURL string
-	embeddingAPIKey  string
-	embeddingModel   string
-	httpClient       *http.Client
-	vectorizer       *Vectorizer
+	baseURL            string
+	apiKey             string
+	chatModel          string
+	embeddingEngine    string // "local" or "remote"
+	embeddingBaseURL   string
+	embeddingAPIKey    string
+	embeddingModel     string
+	transcriptMaxChars int
+	httpClient         *http.Client
+	vectorizer         *Vectorizer
 }
 
 func NewClient(baseURL, apiKey, chatModel, embeddingModel string) *Client {
@@ -67,14 +68,15 @@ func NewClientWithEmbedding(baseURL, apiKey, chatModel, embeddingEngine, embeddi
 	}
 
 	return &Client{
-		baseURL:          baseURL,
-		apiKey:           apiKey,
-		chatModel:        chatModel,
-		embeddingEngine:  embeddingEngine,
-		embeddingBaseURL: embeddingBaseURL,
-		embeddingAPIKey:  embeddingAPIKey,
-		embeddingModel:   embeddingModel,
-		vectorizer:       NewVectorizer(256),
+		baseURL:            baseURL,
+		apiKey:             apiKey,
+		chatModel:          chatModel,
+		embeddingEngine:    embeddingEngine,
+		embeddingBaseURL:   embeddingBaseURL,
+		embeddingAPIKey:    embeddingAPIKey,
+		embeddingModel:     embeddingModel,
+		transcriptMaxChars: defaultTranscriptMaxChars,
+		vectorizer:         NewVectorizer(256),
 		httpClient: &http.Client{
 			Timeout: 45 * time.Second,
 		},
@@ -85,6 +87,14 @@ func NewClientWithEmbedding(baseURL, apiKey, chatModel, embeddingEngine, embeddi
 func (c *Client) SetTimeout(d time.Duration) {
 	if c.httpClient != nil {
 		c.httpClient.Timeout = d
+	}
+}
+
+// SetTranscriptMaxChars задает лимит символов транскрипта летсплея перед отправкой в LLM.
+// n <= 0 отключает обрезку.
+func (c *Client) SetTranscriptMaxChars(n int) {
+	if c != nil {
+		c.transcriptMaxChars = n
 	}
 }
 
@@ -316,16 +326,26 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 	return &result, nil
 }
 
+const defaultTranscriptMaxChars = 8000
+
 // SummarizeVideoTranscript отправляет транскрипт рассказа блогера в LLM для формирования заключения.
 func (c *Client) SummarizeVideoTranscript(ctx context.Context, gameTitle, channelName, videoTitle, transcript string) (string, error) {
+	limit := defaultTranscriptMaxChars
+	if c != nil && c.transcriptMaxChars != 0 {
+		limit = c.transcriptMaxChars
+	}
+	return c.SummarizeVideoTranscriptWithLimit(ctx, gameTitle, channelName, videoTitle, transcript, limit)
+}
+
+// SummarizeVideoTranscriptWithLimit как SummarizeVideoTranscript, но с явным лимитом
+// на длину транскрипта в рунах. maxChars <= 0 отключает обрезку.
+func (c *Client) SummarizeVideoTranscriptWithLimit(ctx context.Context, gameTitle, channelName, videoTitle, transcript string, maxChars int) (string, error) {
 	cleanTranscript := strings.TrimSpace(transcript)
 	if cleanTranscript == "" {
 		return "", fmt.Errorf("empty transcript")
 	}
 
-	if len(cleanTranscript) > 8000 {
-		cleanTranscript = cleanTranscript[:8000] + "..."
-	}
+	cleanTranscript = truncateTranscript(cleanTranscript, maxChars)
 
 	if c == nil || !c.HasAPIKey() {
 		return generateFallbackTranscriptSummary(gameTitle, channelName, cleanTranscript), nil
@@ -445,4 +465,20 @@ func truncateText(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// truncateTranscript обрезает текст по рунам (а не байтам), чтобы не разрезать
+// многобайтовые символы. При превышении лимита сохраняет начало и конец, так как
+// вердикт блогера обычно звучит в конце ролика. maxChars <= 0 отключает обрезку.
+func truncateTranscript(s string, maxChars int) string {
+	if maxChars <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxChars {
+		return s
+	}
+	head := maxChars / 2
+	tail := maxChars - head
+	return string(runes[:head]) + " … " + string(runes[len(runes)-tail:])
 }
