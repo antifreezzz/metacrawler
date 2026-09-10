@@ -147,3 +147,54 @@ embedding∥YouTube (101мс последовательно → <95мс пара
 
 Порог длительности (5 мин) выбран мягким: явные трейлеры и так ловятся по
 заголовку, а короткие части летсплеев не режутся.
+
+## Дополнение: выбор частей пересбора и статус (11.09)
+
+Аудит принудительного пересбора (`RecrawlGame`) выявил 5 пробелов; закрыты все.
+
+### 1. Пересбор по частям (было: монолит)
+
+Введён `worker.RecrawlOptions{Scrape, Summaries, YouTube, Embedding}` и
+`ParseRecrawlOptions` (пусто/`all` -> все части). `POST /api/games/{slug}/recrawl`
+принимает `?parts=scrape,summaries,youtube,embedding`; каждая часть независима:
+
+- `scrape` - карточка игры и отзывы с Metacritic;
+- `summaries` - LLM-резюме по уже сохранённым отзывам (без скрейпа);
+- `youtube` - поиск летсплея, транскрипт и саммари;
+- `embedding` - вектор для похожих игр.
+
+`processGame` разбит на этапы под флаги. `MarkProcessed` ставится только при
+`scrape`, чтобы пересбор резюме/YouTube не «съедал» день.
+
+### 2. Форс-резюме (было: `force` отсутствовал)
+
+Автоматический цикл по-прежнему пропускает резюме, если новых отзывов нет и
+резюме уже есть (экономия токенов). Пересбор идёт с `force=true` и регенерирует
+выбранные части всегда, даже без новых отзывов (смена модели/промпта).
+
+### 3. YouTube не гоняется зря (было: перезапуск каждый цикл)
+
+Обычный цикл пропускает YouTube-анализ, если он уже сохранён; пересбор (часть
+`youtube`) обновляет. Whisper-окна и LLM по транскрипту больше не запускаются
+на каждый часовой цикл для каждой игры.
+
+### 4. Синхронизация цикла и пересбора (было: гонка)
+
+`recrawlingSlugs` заменён на общий in-flight guard `beginGame/endGame`. Цикл
+пропускает слаг, который уже обрабатывается фоновым пересбором (и наоборот),
+без двойного скрейпа/LLM/Whisper и лишней конкуренции за SQLite.
+
+### 5. Статус и поллинг (было: только тост)
+
+`RecrawlState{Status: running|done|error, Options, StartedAt, FinishedAt, Error}`
++ `GET /api/games/{slug}/recrawl/status`. Ошибка фонового пересбора больше не
+теряется в логах. Фронт: модалка с чекбоксами частей (все отмечены по умолчанию),
+после 202 - поллинг статуса каждые 3с, тост по итогу и перезагрузка страницы.
+
+Заодно: возвращаемая из пересбора игра гидратируется отзывами/резюме (в ветке
+пропуска резюме отзывы платформы не теряются).
+
+Тесты: `TestParseRecrawlOptions`, `TestWorker_CycleSkipsSummaryWhenNoNewReviews`,
+`TestWorker_RecrawlForcesSummaryRegen`, `TestWorker_CycleSkipsYouTubeWhenAnalysisExists`,
+`TestWorker_CycleSkipsSlugBeingRecrawled`, `TestWorker_RecrawlGameAsync` (переходы
+статуса), `TestWorker_RecrawlStatusError`, `TestRecrawlStatusEndpoint`.
