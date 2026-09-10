@@ -8,26 +8,29 @@ import (
 )
 
 type Config struct {
-	Port               string
-	DBPath             string
-	CronSchedule       string
-	CrawlDelayMinMs    int
-	CrawlDelayMaxMs    int
-	LLMTimeoutSeconds  int // таймаут запросов к LLM; локальные модели могут думать дольше дефолта
-	LLMBaseURL         string
-	LLMAPIKey          string
-	LLMModel           string
-	EmbeddingEngine    string // "local" (default) or "remote"
-	EmbeddingBaseURL   string
-	EmbeddingAPIKey    string
-	EmbeddingModel     string
-	AdminUsername      string
-	AdminPassword      string
-	SessionSecret      string
-	WhisperURL         string
-	WhisperBinaryPath  string
-	WhisperModelPath   string
-	YouTubeCookiesPath string
+	Port                 string
+	DBPath               string
+	CronSchedule         string
+	CrawlDelayMinMs      int
+	CrawlDelayMaxMs      int
+	LLMTimeoutSeconds    int // таймаут запросов к LLM; локальные модели могут думать дольше дефолта
+	LLMBaseURL           string
+	LLMAPIKey            string
+	LLMModel             string
+	TranscriptMaxChars   int    // лимит символов транскрипта летсплея перед отправкой в LLM
+	EmbeddingEngine      string // "local" (default) or "remote"
+	EmbeddingBaseURL     string
+	EmbeddingAPIKey      string
+	EmbeddingModel       string
+	AdminUsername        string
+	AdminPassword        string
+	SessionSecret        string
+	WhisperURL           string
+	WhisperBinaryPath    string
+	WhisperModelPath     string
+	WhisperWindowSeconds int // длина одного окна аудио для Whisper-фолбэка
+	WhisperMaxWindows    int // максимум окон (начало/середина/конец)
+	YouTubeCookiesPath   string
 }
 
 func Load() *Config {
@@ -37,26 +40,29 @@ func Load() *Config {
 	llmAPIKey := getEnv("LLM_API_KEY", "")
 
 	return &Config{
-		Port:               getEnv("PORT", "8079"),
-		DBPath:             getEnv("DB_PATH", "data/metacrawler.db"),
-		CronSchedule:       getEnv("CRON_SCHEDULE", "0 * * * *"),
-		CrawlDelayMinMs:    getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
-		CrawlDelayMaxMs:    getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
-		LLMTimeoutSeconds:  getEnvAsInt("LLM_TIMEOUT_SECONDS", 45),
-		LLMBaseURL:         llmBaseURL,
-		LLMAPIKey:          llmAPIKey,
-		LLMModel:           getEnv("LLM_MODEL", "auto"),
-		EmbeddingEngine:    getEnv("EMBEDDING_ENGINE", "local"),
-		EmbeddingBaseURL:   getEnv("EMBEDDING_BASE_URL", llmBaseURL),
-		EmbeddingAPIKey:    getEnv("EMBEDDING_API_KEY", llmAPIKey),
-		EmbeddingModel:     getEnv("EMBEDDING_MODEL", "local"),
-		AdminUsername:      getEnv("ADMIN_USERNAME", "admin"),
-		AdminPassword:      getEnv("ADMIN_PASSWORD", ""),
-		SessionSecret:      getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
-		WhisperURL:         getEnv("WHISPER_URL", ""),
-		WhisperBinaryPath:  getEnv("WHISPER_BINARY_PATH", ""),
-		WhisperModelPath:   getEnv("WHISPER_MODEL_PATH", ""),
-		YouTubeCookiesPath: getEnv("YOUTUBE_COOKIES_PATH", ""),
+		Port:                 getEnv("PORT", "8079"),
+		DBPath:               getEnv("DB_PATH", "data/metacrawler.db"),
+		CronSchedule:         getEnv("CRON_SCHEDULE", "0 * * * *"),
+		CrawlDelayMinMs:      getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
+		CrawlDelayMaxMs:      getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
+		LLMTimeoutSeconds:    getEnvAsInt("LLM_TIMEOUT_SECONDS", 45),
+		LLMBaseURL:           llmBaseURL,
+		LLMAPIKey:            llmAPIKey,
+		LLMModel:             getEnv("LLM_MODEL", "auto"),
+		TranscriptMaxChars:   getEnvAsInt("TRANSCRIPT_MAX_CHARS", 40000),
+		EmbeddingEngine:      getEnv("EMBEDDING_ENGINE", "local"),
+		EmbeddingBaseURL:     getEnv("EMBEDDING_BASE_URL", llmBaseURL),
+		EmbeddingAPIKey:      getEnv("EMBEDDING_API_KEY", llmAPIKey),
+		EmbeddingModel:       getEnv("EMBEDDING_MODEL", "local"),
+		AdminUsername:        getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword:        getEnv("ADMIN_PASSWORD", ""),
+		SessionSecret:        getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
+		WhisperURL:           getEnv("WHISPER_URL", ""),
+		WhisperBinaryPath:    getEnv("WHISPER_BINARY_PATH", ""),
+		WhisperModelPath:     getEnv("WHISPER_MODEL_PATH", ""),
+		WhisperWindowSeconds: getEnvAsInt("WHISPER_WINDOW_SECONDS", 60),
+		WhisperMaxWindows:    getEnvAsInt("WHISPER_MAX_WINDOWS", 3),
+		YouTubeCookiesPath:   getEnv("YOUTUBE_COOKIES_PATH", ""),
 	}
 }
 

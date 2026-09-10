@@ -13,9 +13,9 @@ import (
 	"metacrawler/internal/config"
 	"metacrawler/internal/llm"
 	"metacrawler/internal/scraper"
+	"metacrawler/internal/server"
 	"metacrawler/internal/storage"
 	"metacrawler/internal/worker"
-	"metacrawler/internal/server"
 	"metacrawler/internal/youtube"
 )
 
@@ -45,8 +45,9 @@ func main() {
 	if cfg.LLMTimeoutSeconds > 0 {
 		llmClient.SetTimeout(time.Duration(cfg.LLMTimeoutSeconds) * time.Second)
 	}
+	llmClient.SetTranscriptMaxChars(cfg.TranscriptMaxChars)
 
-	ytClient := youtube.NewClientWithWhisperURL(llmClient, cfg.WhisperURL, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath)
+	ytClient := youtube.NewClientWithWhisperURL(llmClient, cfg.WhisperURL, cfg.WhisperBinaryPath, cfg.WhisperModelPath, cfg.YouTubeCookiesPath, cfg.WhisperWindowSeconds, cfg.WhisperMaxWindows)
 
 	workerMgr := worker.NewManager(db, scraperClient, llmClient, ytClient, cfg)
 

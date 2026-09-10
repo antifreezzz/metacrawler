@@ -236,10 +236,8 @@ func TestTranscribeViaHTTP(t *testing.T) {
 	require.NoError(t, err)
 	tmpFile.Close()
 
-	client := youtube.NewClientWithWhisperURL(nil, mockServer.URL, "", "", "")
+	client := youtube.NewClientWithWhisperURL(nil, mockServer.URL, "", "", "", 0, 0)
 	text, err := client.TranscribeViaHTTP(context.Background(), tmpFile.Name())
 	require.NoError(t, err)
 	require.Equal(t, "Hello from remote whisper STT server!", text)
 }
-
-

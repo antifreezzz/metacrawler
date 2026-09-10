@@ -1,4 +1,4 @@
-.PHONY: all build test run docker-build docker-up deploy clean
+.PHONY: all build test run probe probe-transcript docker-build docker-up deploy clean
 
 all: test build
 
@@ -13,6 +13,9 @@ run: build
 
 probe:
 	go run ./cmd/scraper_probe/main.go
+
+probe-transcript:
+	go run ./cmd/transcript_probe/main.go
 
 docker-build:
 	docker build -t metacrawler:latest .

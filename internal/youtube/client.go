@@ -36,12 +36,14 @@ type VideoInfo struct {
 }
 
 type Client struct {
-	httpClient        *http.Client
-	llmClient         *llm.Client
-	whisperURL        string
-	whisperBinaryPath string
-	whisperModelPath  string
-	cookiesPath       string
+	httpClient           *http.Client
+	llmClient            *llm.Client
+	whisperURL           string
+	whisperBinaryPath    string
+	whisperModelPath     string
+	whisperWindowSeconds int
+	whisperMaxWindows    int
+	cookiesPath          string
 }
 
 func NewClient(llmClient *llm.Client) *Client {
@@ -49,10 +51,10 @@ func NewClient(llmClient *llm.Client) *Client {
 }
 
 func NewClientWithConfig(llmClient *llm.Client, whisperBinary, whisperModel, cookiesPath string) *Client {
-	return NewClientWithWhisperURL(llmClient, "", whisperBinary, whisperModel, cookiesPath)
+	return NewClientWithWhisperURL(llmClient, "", whisperBinary, whisperModel, cookiesPath, 0, 0)
 }
 
-func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, whisperModel, cookiesPath string) *Client {
+func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, whisperModel, cookiesPath string, whisperWindowSeconds, whisperMaxWindows int) *Client {
 	if whisperBinary == "" && whisperURL == "" {
 		for _, p := range []string{
 			"/usr/local/bin/whisper-cli",
@@ -82,11 +84,13 @@ func NewClientWithWhisperURL(llmClient *llm.Client, whisperURL, whisperBinary, w
 		httpClient: &http.Client{
 			Timeout: 45 * time.Second,
 		},
-		llmClient:         llmClient,
-		whisperURL:        whisperURL,
-		whisperBinaryPath: whisperBinary,
-		whisperModelPath:  whisperModel,
-		cookiesPath:       cookiesPath,
+		llmClient:            llmClient,
+		whisperURL:           whisperURL,
+		whisperBinaryPath:    whisperBinary,
+		whisperModelPath:     whisperModel,
+		whisperWindowSeconds: whisperWindowSeconds,
+		whisperMaxWindows:    whisperMaxWindows,
+		cookiesPath:          cookiesPath,
 	}
 }
 
@@ -549,6 +553,22 @@ func (c *Client) findYtDlp() string {
 	return ""
 }
 
+// subtitleArgs собирает аргументы yt-dlp для скачивания субтитров.
+// --ignore-errors критичен: русские авто-субтитры часто отваливаются с 429/timeout,
+// и без него yt-dlp аварийно завершается, не успев скачать английские.
+func subtitleArgs(outputPattern string) []string {
+	return []string{
+		"--skip-download",
+		"--write-sub",
+		"--write-auto-sub",
+		"--sub-lang", "ru.*,en.*,ru,en",
+		"--convert-subs", "vtt",
+		"--ignore-errors",
+		"--no-warnings",
+		"-o", outputPattern,
+	}
+}
+
 // fetchViaYtDlp пытается загрузить субтитры через утилиту yt-dlp (если доступна в системе).
 func (c *Client) fetchViaYtDlp(ctx context.Context, videoID string) (string, error) {
 	if !validVideoIDRe.MatchString(videoID) {
@@ -561,19 +581,12 @@ func (c *Client) fetchViaYtDlp(ctx context.Context, videoID string) (string, err
 	}
 
 	tmpPattern := filepath.Join(os.TempDir(), fmt.Sprintf("mc_sub_%s_%%(id)s", videoID))
-	cmdCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	args := []string{
-		"--skip-download",
-		"--write-sub",
-		"--write-auto-sub",
-		"--sub-lang", "ru.*,en.*,ru,en",
-		"--convert-subs", "vtt",
-		"--no-warnings",
-	}
+	args := subtitleArgs(tmpPattern)
 	args = append(args, c.getYtDlpCommonArgs()...)
-	args = append(args, "-o", tmpPattern, "https://www.youtube.com/watch?v="+videoID)
+	args = append(args, "https://www.youtube.com/watch?v="+videoID)
 
 	cmd := exec.CommandContext(cmdCtx, ytDlpPath, args...)
 	_ = cmd.Run()
@@ -746,7 +759,7 @@ func (c *Client) fetchViaWebPage(ctx context.Context, videoID string) (string, e
 	return ParseTimedText(captionBody)
 }
 
-func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, error) {
+func (c *Client) fetchViaWhisper(ctx context.Context, videoID string, durationSec int) (string, error) {
 	if !validVideoIDRe.MatchString(videoID) {
 		return "", fmt.Errorf("invalid video ID format")
 	}
@@ -768,15 +781,39 @@ func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, e
 		return "", fmt.Errorf("yt-dlp not found")
 	}
 
-	tmpAudio := filepath.Join(os.TempDir(), fmt.Sprintf("mc_audio_%s.mp3", videoID))
-	defer os.Remove(tmpAudio)
+	windows := BuildAudioWindows(c.whisperWindowSeconds, durationSec, c.whisperMaxWindows)
 
-	dlCtx, dlCancel := context.WithTimeout(ctx, 45*time.Second)
+	var parts []string
+	for i, w := range windows {
+		audioPath, err := c.downloadAudioWindow(ctx, ytDlpPath, videoID, w, i)
+		if err != nil {
+			continue
+		}
+		text, err := c.transcribeAudio(ctx, audioPath, w.End-w.Start)
+		_ = os.Remove(audioPath)
+		if err == nil && text != "" {
+			parts = append(parts, text)
+		}
+	}
+
+	if len(parts) == 0 {
+		return "", fmt.Errorf("no audio windows could be transcribed")
+	}
+
+	return strings.Join(parts, " ... "), nil
+}
+
+// downloadAudioWindow скачивает один временной отрезок аудио через yt-dlp во временный mp3.
+func (c *Client) downloadAudioWindow(ctx context.Context, ytDlpPath, videoID string, w AudioWindow, idx int) (string, error) {
+	tmpAudio := filepath.Join(os.TempDir(), fmt.Sprintf("mc_audio_%s_%d.mp3", videoID, idx))
+	_ = os.Remove(tmpAudio)
+
+	dlCtx, dlCancel := context.WithTimeout(ctx, 45*time.Second+time.Duration(w.End-w.Start)*time.Second)
 	defer dlCancel()
 
 	dlArgs := []string{
 		"-f", "ba",
-		"--download-sections", "*00:00-01:00",
+		"--download-sections", w.SectionArg(),
 		"-x",
 		"--audio-format", "mp3",
 		"--no-warnings",
@@ -788,19 +825,29 @@ func (c *Client) fetchViaWhisper(ctx context.Context, videoID string) (string, e
 	_ = dlCmd.Run()
 
 	if stat, err := os.Stat(tmpAudio); err != nil || stat.Size() == 0 {
-		return "", fmt.Errorf("audio file was not downloaded")
+		_ = os.Remove(tmpAudio)
+		return "", fmt.Errorf("audio window %d was not downloaded", idx)
 	}
 
-	sttCtx, sttCancel := context.WithTimeout(ctx, 60*time.Second)
+	return tmpAudio, nil
+}
+
+// transcribeAudio распознает один аудиофайл через HTTP-эндпоинт либо локальный whisper-cli.
+func (c *Client) transcribeAudio(ctx context.Context, audioPath string, windowSec int) (string, error) {
+	if windowSec <= 0 {
+		windowSec = 60
+	}
+
+	sttCtx, sttCancel := context.WithTimeout(ctx, 60*time.Second+time.Duration(windowSec)*time.Second)
 	defer sttCancel()
 
 	if c.whisperURL != "" {
-		return c.TranscribeViaHTTP(sttCtx, tmpAudio)
+		return c.TranscribeViaHTTP(sttCtx, audioPath)
 	}
 
 	sttCmd := exec.CommandContext(sttCtx, c.whisperBinaryPath,
 		"-m", c.whisperModelPath,
-		"-f", tmpAudio,
+		"-f", audioPath,
 		"-l", "auto",
 		"-nt",
 		"--no-prints",
@@ -902,7 +949,8 @@ func CleanWhisperOutput(raw string) string {
 }
 
 // FetchTranscript извлекает субтитры к видео, пробуя yt-dlp, Innertube API, веб-страницу и Vulkan Whisper STT.
-func (c *Client) FetchTranscript(ctx context.Context, videoID string) (string, error) {
+// durationSec используется Whisper-фолбэком для выбора окон аудио (0, если длительность неизвестна).
+func (c *Client) FetchTranscript(ctx context.Context, videoID string, durationSec int) (string, error) {
 	// 1. Приоритет: yt-dlp (субтитры и автосубтитры)
 	if text, err := c.fetchViaYtDlp(ctx, videoID); err == nil && text != "" {
 		return text, nil
@@ -919,7 +967,7 @@ func (c *Client) FetchTranscript(ctx context.Context, videoID string) (string, e
 	}
 
 	// 4. Локальный Vulkan Whisper STT фолбэк (разбор аудиодорожки летсплея)
-	if text, err := c.fetchViaWhisper(ctx, videoID); err == nil && text != "" {
+	if text, err := c.fetchViaWhisper(ctx, videoID, durationSec); err == nil && text != "" {
 		return text, nil
 	}
 
@@ -933,7 +981,7 @@ func (c *Client) AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*d
 		return nil, fmt.Errorf("search letsplay: %w", err)
 	}
 
-	transcript, _ := c.FetchTranscript(ctx, videoInfo.VideoID)
+	transcript, _ := c.FetchTranscript(ctx, videoInfo.VideoID, ParseDuration(videoInfo.Duration))
 
 	var summary string
 	if transcript != "" && c.llmClient != nil {
@@ -968,4 +1016,3 @@ func generateFallbackTranscriptSummary(gameTitle, channelName, transcript string
 	}
 	return fmt.Sprintf("В летсплее по игре %s блогер отмечает: «%s».", gameTitle, clean)
 }
-

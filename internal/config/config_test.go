@@ -39,3 +39,33 @@ func TestLoadConfig_LLMTimeoutDefault(t *testing.T) {
 	cfg := config.Load()
 	require.Equal(t, 45, cfg.LLMTimeoutSeconds)
 }
+
+func TestLoadConfig_WhisperSamplingDefaults(t *testing.T) {
+	cfg := config.Load()
+	require.Equal(t, 60, cfg.WhisperWindowSeconds)
+	require.Equal(t, 3, cfg.WhisperMaxWindows)
+}
+
+func TestLoadConfig_WhisperSamplingEnvOverrides(t *testing.T) {
+	os.Setenv("WHISPER_WINDOW_SECONDS", "90")
+	os.Setenv("WHISPER_MAX_WINDOWS", "2")
+	defer func() {
+		os.Unsetenv("WHISPER_WINDOW_SECONDS")
+		os.Unsetenv("WHISPER_MAX_WINDOWS")
+	}()
+
+	cfg := config.Load()
+	require.Equal(t, 90, cfg.WhisperWindowSeconds)
+	require.Equal(t, 2, cfg.WhisperMaxWindows)
+}
+
+func TestLoadConfig_TranscriptMaxChars(t *testing.T) {
+	cfg := config.Load()
+	require.Equal(t, 40000, cfg.TranscriptMaxChars)
+
+	os.Setenv("TRANSCRIPT_MAX_CHARS", "12000")
+	defer os.Unsetenv("TRANSCRIPT_MAX_CHARS")
+
+	cfg = config.Load()
+	require.Equal(t, 12000, cfg.TranscriptMaxChars)
+}
