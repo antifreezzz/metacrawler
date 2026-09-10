@@ -25,11 +25,11 @@
       >{{end}}
       {{if .IsAdmin}}
       <button
+        type="button"
         class="button primary btn-action"
         style="margin-top: 12px; width: 100%; justify-content: center; gap: 8px;"
-        hx-post="/api/games/{{.Game.Slug}}/recrawl"
-        hx-swap="none"
-        onclick="this.innerText='⏳ Пересбор запущен в фоне...'; this.disabled=true;">
+        data-recrawl-slug="{{.Game.Slug}}"
+        data-recrawl-title="{{.Game.Title}}">
         🔄 Пересобрать данные
       </button>
       {{end}}
