@@ -144,6 +144,75 @@ func NormalizeTitle(s string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
+// minLetsPlaySeconds - минимальная длительность ролика, чтобы считать его летсплеем.
+// Трейлеры и промо-ролики, как правило, короче; live-трансляции не имеют lengthText и не отбрасываются.
+const minLetsPlaySeconds = 300
+
+// trailerTokens - одиночные слова, однозначно указывающие на трейлер или промо-ролик.
+var trailerTokens = map[string]bool{
+	"trailer":      true,
+	"trailers":     true,
+	"teaser":       true,
+	"teasers":      true,
+	"cinematic":    true,
+	"cinematics":   true,
+	"announcement": true,
+	"preorder":     true,
+	"preorders":    true,
+}
+
+// trailerPhrases - словосочетания-маркеры промо-роликов (по нормализованным токенам).
+var trailerPhrases = []string{
+	"gameplay reveal",
+	"gameplay demo",
+	"tv spot",
+	"coming soon",
+	"release date",
+}
+
+// ParseDuration переводит строку длительности YouTube ("1:02:33", "3:21") в секунды.
+// Возвращает 0 для пустых, live-трансляций и нераспознанных значений.
+func ParseDuration(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0
+	}
+	total := 0
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil || n < 0 {
+			return 0
+		}
+		total = total*60 + n
+	}
+	return total
+}
+
+// IsTrailer определяет, является ли ролик трейлером или промо-материалом по заголовку.
+// Намеренно не использует широкие слова (official, launch, reveal в одиночку), чтобы не резать летсплеи и стримы.
+func IsTrailer(title string) bool {
+	words := strings.Fields(NormalizeTitle(title))
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range words {
+		if trailerTokens[w] {
+			return true
+		}
+	}
+	joined := " " + strings.Join(words, " ") + " "
+	for _, p := range trailerPhrases {
+		if strings.Contains(joined, " "+p+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsVideoRelevant проверяет соответствие названия видео названию игры.
 // Исключает ложные срабатывания (например, Pocket Ants для ANT SIMULATOR или Star Wars для Escape from Company).
 func IsVideoRelevant(gameTitle, videoTitle string) bool {
@@ -378,6 +447,15 @@ func ParseTopVideoFromSearchHTML(htmlContent []byte, gameTitle string) (*VideoIn
 				continue
 			}
 
+			// Фильтрация трейлеров и промо-роликов, не являющихся летсплеями
+			if IsTrailer(title) {
+				continue
+			}
+			durationStr := v.Get("lengthText.simpleText").String()
+			if secs := ParseDuration(durationStr); secs > 0 && secs < minLetsPlaySeconds {
+				continue
+			}
+
 			channel := v.Get("ownerText.runs.0.text").String()
 			viewCountStr := v.Get("viewCountText.simpleText").String()
 			viewCount := ParseViewCount(viewCountStr)
@@ -388,6 +466,7 @@ func ParseTopVideoFromSearchHTML(htmlContent []byte, gameTitle string) (*VideoIn
 				ChannelName: channel,
 				ViewCount:   viewCount,
 				URL:         "https://www.youtube.com/watch?v=" + videoID,
+				Duration:    durationStr,
 			}
 
 			if best == nil || item.ViewCount > best.ViewCount {
