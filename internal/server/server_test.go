@@ -146,6 +146,35 @@ func TestGameDetailHandler_DescriptionParagraphs(t *testing.T) {
 	require.NotContains(t, body, "paragraph.\n\nSecond")
 }
 
+func TestGameDetailHandler_ShowsRussianDescriptionWithOriginal(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	game := &domain.Game{
+		ID:          "g-ru",
+		Slug:        "ru-desc-game",
+		Title:       "RU Desc Game",
+		Description: "Original English description.",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "ru-desc-game")
+	require.NoError(t, err)
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Русское описание.\n\nВторой абзац."))
+
+	req := httptest.NewRequest("GET", "/games/ru-desc-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body, "<p>Русское описание.</p>")
+	require.Contains(t, body, "<p>Второй абзац.</p>")
+	require.Contains(t, body, "original-description", "оригинал должен быть в сворачиваемом блоке")
+	require.Contains(t, body, "<p>Original English description.</p>")
+	require.Contains(t, body, `<meta property="og:description" content="Русское описание. Второй абзац." />`)
+}
+
 func TestGameDetailHandler_OpenGraphTags(t *testing.T) {
 	srv, db := setupServer(t)
 	defer db.Close()
@@ -547,6 +576,29 @@ func TestRecrawlStatusEndpoint(t *testing.T) {
 	recBad := httptest.NewRecorder()
 	srv.Router().ServeHTTP(recBad, reqBad)
 	require.Equal(t, http.StatusBadRequest, recBad.Code)
+}
+
+func TestRecrawlTranslationPart_Accepted(t *testing.T) {
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Port:          "8079",
+		AdminUsername: "admin",
+		AdminPassword: "secret-password",
+		SessionSecret: "secret-key",
+	}
+	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	req := httptest.NewRequest("POST", "/api/games/dummy-game/recrawl?parts=translation", nil)
+	req.SetBasicAuth("admin", "secret-password")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Contains(t, rec.Body.String(), "translation")
 }
 
 func TestLogin_OpenRedirectPrevention(t *testing.T) {
