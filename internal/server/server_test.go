@@ -495,6 +495,60 @@ func TestGameRecrawlEndpoint_RequiresAuthAndExecutes(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, recAuth.Code)
 }
 
+func TestRecrawlStatusEndpoint(t *testing.T) {
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Port:          "8079",
+		AdminUsername: "admin",
+		AdminPassword: "secret-password",
+		SessionSecret: "secret-key",
+	}
+	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "text-embedding-3-small")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	// 1. Неизвестный slug -> idle
+	reqIdle := httptest.NewRequest("GET", "/api/games/unknown-game/recrawl/status", nil)
+	reqIdle.SetBasicAuth("admin", "secret-password")
+	recIdle := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recIdle, reqIdle)
+	require.Equal(t, http.StatusOK, recIdle.Code)
+	require.Contains(t, recIdle.Body.String(), `"status":"idle"`)
+
+	// 2. Статус требует авторизации
+	reqNoAuth := httptest.NewRequest("GET", "/api/games/unknown-game/recrawl/status", nil)
+	recNoAuth := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recNoAuth, reqNoAuth)
+	require.Equal(t, http.StatusUnauthorized, recNoAuth.Code)
+
+	// 3. Запуск пересбора выбранных частей -> 202 и options в ответе
+	reqStart := httptest.NewRequest("POST", "/api/games/dummy-game/recrawl?parts=summaries,embedding", nil)
+	reqStart.SetBasicAuth("admin", "secret-password")
+	recStart := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recStart, reqStart)
+	require.Equal(t, http.StatusAccepted, recStart.Code)
+	require.Contains(t, recStart.Body.String(), "summaries,embedding")
+
+	// 4. Статус запущенной игры содержит slug и выбранные части
+	reqStatus := httptest.NewRequest("GET", "/api/games/dummy-game/recrawl/status", nil)
+	reqStatus.SetBasicAuth("admin", "secret-password")
+	recStatus := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recStatus, reqStatus)
+	require.Equal(t, http.StatusOK, recStatus.Code)
+	require.Contains(t, recStatus.Body.String(), `"slug":"dummy-game"`)
+	require.Contains(t, recStatus.Body.String(), "summaries,embedding")
+
+	// 5. Пустой набор частей (неизвестные значения) -> 400
+	reqBad := httptest.NewRequest("POST", "/api/games/dummy-game/recrawl?parts=unknown", nil)
+	reqBad.SetBasicAuth("admin", "secret-password")
+	recBad := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recBad, reqBad)
+	require.Equal(t, http.StatusBadRequest, recBad.Code)
+}
+
 func TestLogin_OpenRedirectPrevention(t *testing.T) {
 	db, err := storage.New(":memory:")
 	require.NoError(t, err)

@@ -258,7 +258,7 @@ func TestWorker_ReviewPlatformAttribution(t *testing.T) {
 	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Maybe()
 
-	_, err := mgr.RecrawlGame(ctx, "attrib-game")
+	_, err := mgr.RecrawlGame(ctx, "attrib-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 
 	saved, err := db.GetGameBySlug(ctx, "attrib-game")
@@ -294,7 +294,7 @@ func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
 		Return((*llm.SummaryResult)(nil), fmt.Errorf("%w: no key", llm.ErrLLMUnavailable)).Once()
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
 
-	saved, err := mgr.RecrawlGame(ctx, "llm-error-game")
+	saved, err := mgr.RecrawlGame(ctx, "llm-error-game", worker.AllRecrawlOptions())
 	// Ошибка LLM не должна валить сохранение игры
 	require.NoError(t, err)
 	require.NotNil(t, saved)
@@ -355,7 +355,27 @@ func setupWorkerEnvWithLLM(t *testing.T, llmClient worker.LLMClient) (*storage.D
 	return db, scraperMock, mgr
 }
 
-func TestWorker_SkipsSummaryWhenNoNewReviews(t *testing.T) {
+func TestParseRecrawlOptions(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want worker.RecrawlOptions
+	}{
+		{"", worker.AllRecrawlOptions()},
+		{"all", worker.AllRecrawlOptions()},
+		{"scrape,summaries,youtube,embedding", worker.AllRecrawlOptions()},
+		{"scrape", worker.RecrawlOptions{Scrape: true}},
+		{"summaries", worker.RecrawlOptions{Summaries: true}},
+		{"youtube", worker.RecrawlOptions{YouTube: true}},
+		{"embedding", worker.RecrawlOptions{Embedding: true}},
+		{" summary , youtube ", worker.RecrawlOptions{Summaries: true, YouTube: true}},
+		{"unknown", worker.RecrawlOptions{}},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, worker.ParseRecrawlOptions(tc.raw), "raw=%q", tc.raw)
+	}
+}
+
+func TestWorker_CycleSkipsSummaryWhenNoNewReviews(t *testing.T) {
 	recLLM := &recordingLLM{}
 	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
 	defer db.Close()
@@ -373,19 +393,140 @@ func TestWorker_SkipsSummaryWhenNoNewReviews(t *testing.T) {
 	revs := []domain.Review{
 		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review"},
 	}
+
+	// Предзаполняем игру, отзывы и резюме в БД (без пометки "обработано").
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "no-new-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+	for i := range revs {
+		revs[i].GamePlatformID = platID
+	}
+	savedCount, err := db.SaveReviews(ctx, revs)
+	require.NoError(t, err)
+	require.Equal(t, 1, savedCount)
+	require.NoError(t, db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+		GamePlatformID: platID,
+		CriticPros:     "existing",
+	}))
+
+	// Автоматический цикл: отзывы те же, резюме уже есть -> LLM не вызывается.
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"no-new-game"}, nil).Once()
 	scraperMock.On("FetchGameDetails", mock.Anything, "no-new-game").Return(game, revs, nil).Once()
 
-	_, err := mgr.RecrawlGame(ctx, "no-new-game")
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, 0, recLLM.summarizeCalls,
+		"резюме не должно пересобираться в цикле, если отзывы не изменились и резюме уже есть")
+}
+
+func TestWorker_RecrawlForcesSummaryRegen(t *testing.T) {
+	recLLM := &recordingLLM{}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	score80 := 80
+	game := &domain.Game{
+		Slug:  "force-game",
+		Title: "Force Game",
+		Platforms: []domain.GamePlatform{
+			{Platform: "pc", Metascore: &score80},
+		},
+	}
+	revs := []domain.Review{
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review"},
+	}
+	scraperMock.On("FetchGameDetails", mock.Anything, "force-game").Return(game, revs, nil).Once()
+
+	saved, err := mgr.RecrawlGame(ctx, "force-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 	require.Equal(t, 1, recLLM.summarizeCalls)
+	require.NotEmpty(t, saved.Platforms[0].Reviews, "возвращаемая игра должна содержать отзывы")
 
-	// Второй пересбор: новых отзывов нет, резюме уже есть
-	scraperMock.On("FetchGameDetails", mock.Anything, "no-new-game").Return(game, revs, nil).Once()
-
-	_, err = mgr.RecrawlGame(ctx, "no-new-game")
+	// Принудительный пересбор только резюме: отзывы не изменились, но резюме регенерируется,
+	// а Metacritic повторно не скрейпится.
+	saved, err = mgr.RecrawlGame(ctx, "force-game", worker.RecrawlOptions{Summaries: true})
 	require.NoError(t, err)
-	require.Equal(t, 1, recLLM.summarizeCalls,
-		"резюме не должно пересобираться, если отзывы не изменились и резюме уже есть")
+	require.Equal(t, 2, recLLM.summarizeCalls,
+		"force-пересбор должен регенерировать резюме даже без новых отзывов")
+	require.NotEmpty(t, saved.Platforms[0].Reviews)
+}
+
+func TestWorker_CycleSkipsYouTubeWhenAnalysisExists(t *testing.T) {
+	recLLM := &slowingEmbedLLM{}
+	recYT := &recordingYT{}
+
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{CrawlDelayMinMs: 1, CrawlDelayMaxMs: 2}
+	scraperMock := new(MockScraper)
+	mgr := worker.NewManager(db, scraperMock, recLLM, recYT, cfg)
+
+	ctx := context.Background()
+
+	game := &domain.Game{
+		Slug:        "yt-skip-game",
+		Title:       "YT Skip Game",
+		Description: "desc",
+		Platforms:   []domain.GamePlatform{{Platform: "pc"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "yt-skip-game")
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertYouTubeAnalysis(ctx, &domain.YouTubeAnalysis{
+		GameID:  saved.ID,
+		VideoID: "existing",
+		Summary: "already there",
+	}))
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"yt-skip-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "yt-skip-game").Return(game, []domain.Review{}, nil).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, 0, recYT.calls, "цикл не должен перезапускать YouTube, если анализ уже есть")
+}
+
+func TestWorker_CycleSkipsSlugBeingRecrawled(t *testing.T) {
+	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	g, revs := sampleGame("busy-game")
+	startedCh := make(chan struct{})
+	release := make(chan struct{})
+
+	scraperMock.On("FetchGameDetails", mock.Anything, "busy-game").Run(func(mock.Arguments) {
+		close(startedCh)
+		<-release
+	}).Return(g, revs, nil).Once()
+
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&llm.SummaryResult{}, nil).Maybe()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Maybe()
+
+	started, err := mgr.RecrawlGameAsync("busy-game", worker.AllRecrawlOptions())
+	require.NoError(t, err)
+	require.True(t, started)
+	<-startedCh
+
+	// Цикл видит ту же игру, но она уже обрабатывается -> пропуск, второго скрейпа нет.
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"busy-game"}, nil).Once()
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	close(release)
+	require.Eventually(t, func() bool {
+		return !mgr.IsRecrawling("busy-game")
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestWorker_ParallelPlatformSummaries(t *testing.T) {
@@ -410,7 +551,7 @@ func TestWorker_ParallelPlatformSummaries(t *testing.T) {
 	}
 	scraperMock.On("FetchGameDetails", mock.Anything, "parallel-game").Return(game, revs, nil).Once()
 
-	_, err := mgr.RecrawlGame(ctx, "parallel-game")
+	_, err := mgr.RecrawlGame(ctx, "parallel-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 
 	// Все три платформы получили резюме, каждое - из своей платформы
@@ -484,7 +625,7 @@ func TestWorker_EmbeddingAndYouTubeRunConcurrently(t *testing.T) {
 	scraperMock.On("FetchGameDetails", mock.Anything, "conc-game").Return(game, revs, nil).Once()
 
 	start := time.Now()
-	_, err = mgr.RecrawlGame(ctx, "conc-game")
+	_, err = mgr.RecrawlGame(ctx, "conc-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 
@@ -522,14 +663,14 @@ func TestWorker_RecordsScoreHistory(t *testing.T) {
 	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&llm.SummaryResult{}, nil).Maybe()
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
 
-	_, err := mgr.RecrawlGame(ctx, "scoring-game")
+	_, err := mgr.RecrawlGame(ctx, "scoring-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 
 	// Пересбор: metascore изменился с 80 на 85
 	scraperMock.On("FetchGameDetails", mock.Anything, "scoring-game").Return(game2, revs, nil).Once()
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.2}, nil).Once()
 
-	_, err = mgr.RecrawlGame(ctx, "scoring-game")
+	_, err = mgr.RecrawlGame(ctx, "scoring-game", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 
 	saved, err := db.GetGameBySlug(ctx, "scoring-game")
@@ -558,7 +699,7 @@ func TestWorker_RecrawlGame(t *testing.T) {
 	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(llmSummary, nil).Once()
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.5, 0.5}, nil).Once()
 
-	savedGame, err := mgr.RecrawlGame(ctx, "recrawl-target")
+	savedGame, err := mgr.RecrawlGame(ctx, "recrawl-target", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 	require.NotNil(t, savedGame)
 	require.Equal(t, "recrawl-target", savedGame.Slug)
@@ -591,18 +732,28 @@ func TestWorker_RecrawlGameAsync(t *testing.T) {
 	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.5, 0.5}, nil).Maybe()
 
 	// 1. Первый запуск должен успешно стартовать
-	started, err := mgr.RecrawlGameAsync("async-target")
+	started, err := mgr.RecrawlGameAsync("async-target", worker.AllRecrawlOptions())
 	require.NoError(t, err)
 	require.True(t, started)
 
 	// Ждем, пока горутина начнет выполнение
 	<-startedCh
 
+	// Статус во время работы - running
+	state, ok := mgr.RecrawlStatus("async-target")
+	require.True(t, ok)
+	require.Equal(t, "running", state.Status)
+	require.Equal(t, "scrape,summaries,youtube,embedding", state.Options)
+
 	// 2. Повторный запуск для того же slug должен вернуть false (already active)
-	started2, err2 := mgr.RecrawlGameAsync("async-target")
+	started2, err2 := mgr.RecrawlGameAsync("async-target", worker.AllRecrawlOptions())
 	require.NoError(t, err2)
 	require.False(t, started2)
 	require.True(t, mgr.IsRecrawling("async-target"))
+
+	// Пустой набор частей недопустим
+	_, errEmpty := mgr.RecrawlGameAsync("other-target", worker.RecrawlOptions{})
+	require.Error(t, errEmpty)
 
 	// Разрешаем завершиться
 	close(continueCh)
@@ -611,4 +762,30 @@ func TestWorker_RecrawlGameAsync(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !mgr.IsRecrawling("async-target")
 	}, 2*time.Second, 10*time.Millisecond)
+
+	// Статус после успешного завершения - done
+	finalState, ok := mgr.RecrawlStatus("async-target")
+	require.True(t, ok)
+	require.Equal(t, "done", finalState.Status)
+	require.Empty(t, finalState.Error)
+}
+
+func TestWorker_RecrawlStatusError(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	scraperMock.On("FetchGameDetails", mock.Anything, "broken-game").
+		Return((*domain.Game)(nil), []domain.Review(nil), fmt.Errorf("scrape failed")).Once()
+
+	started, err := mgr.RecrawlGameAsync("broken-game", worker.RecrawlOptions{Scrape: true})
+	require.NoError(t, err)
+	require.True(t, started)
+
+	require.Eventually(t, func() bool {
+		state, ok := mgr.RecrawlStatus("broken-game")
+		return ok && state.Status == "error"
+	}, 2*time.Second, 10*time.Millisecond)
+
+	state, _ := mgr.RecrawlStatus("broken-game")
+	require.Contains(t, state.Error, "scrape failed")
 }
