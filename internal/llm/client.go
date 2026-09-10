@@ -272,6 +272,7 @@ func (c *Client) SummarizeReviews(ctx context.Context, gameTitle, platform strin
 	systemPrompt := `You are an expert video game analyst.
 Analyze the provided reviews for the given game on the specified platform.
 Separate your analysis into what critics liked/disliked, and what users liked/disliked.
+Write all summary values in Russian (на русском языке), even though the reviews may be in English.
 You must respond with ONLY a valid JSON object strictly matching this schema:
 {
   "critic_pros": "concise summary of what critics liked",
@@ -327,6 +328,59 @@ You must respond with ONLY a valid JSON object strictly matching this schema:
 }
 
 const defaultTranscriptMaxChars = 8000
+
+// TranslateToRussian переводит текст (например, описание игры) на русский язык.
+// При недоступности LLM возвращает ErrLLMUnavailable: выдуманный перевод недопустим.
+func (c *Client) TranslateToRussian(ctx context.Context, text string) (string, error) {
+	cleanText := strings.TrimSpace(text)
+	if cleanText == "" {
+		return "", fmt.Errorf("empty text to translate")
+	}
+	if c == nil || !c.HasAPIKey() {
+		return "", fmt.Errorf("%w: LLM_API_KEY не задан", ErrLLMUnavailable)
+	}
+
+	systemPrompt := `Ты профессиональный переводчик игровой журналистики.
+Переведи переданное описание видеоигры на русский язык.
+Требования:
+- Сохрани разбиение на абзацы (пустая строка между абзацами).
+- Не добавляй комментарии, пояснения или кавычки - верни только перевод.
+- Сохрани названия игр, студий и торговые марки без перевода.`
+
+	effectiveModel := c.GetOrDiscoverModel(ctx)
+
+	payload := map[string]interface{}{
+		"model": effectiveModel,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": cleanText},
+		},
+		"temperature": 0.2,
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	resp, respBody, err := c.sendRequest(ctx, "POST", "/chat/completions", bodyBytes)
+	if err != nil {
+		return "", fmt.Errorf("%w: request failed: %v", ErrLLMUnavailable, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: status %d: %s", ErrLLMUnavailable, resp.StatusCode, truncateText(string(respBody), 120))
+	}
+
+	content := strings.TrimSpace(gjson.GetBytes(respBody, "choices.0.message.content").String())
+	if content == "" {
+		content = strings.TrimSpace(gjson.GetBytes(respBody, "choices.0.message.reasoning_content").String())
+	}
+	if content == "" {
+		return "", fmt.Errorf("%w: empty translation response", ErrLLMUnavailable)
+	}
+
+	return cleanJSONMarkdown(content), nil
+}
 
 // SummarizeVideoTranscript отправляет транскрипт рассказа блогера в LLM для формирования заключения.
 func (c *Client) SummarizeVideoTranscript(ctx context.Context, gameTitle, channelName, videoTitle, transcript string) (string, error) {

@@ -276,6 +276,65 @@ func TestSummarizeReviews_InvalidJSON_ReturnsError(t *testing.T) {
 	require.Nil(t, res)
 }
 
+func TestSummarizeReviews_AsksForRussianOutput(t *testing.T) {
+	var capturedBody []byte
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": `{"critic_pros":"Графика","critic_cons":"Баги","user_pros":"Весело","user_cons":"Сложно"}`}},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o", "local")
+	_, err := client.SummarizeReviews(context.Background(), "Game", "pc",
+		[]domain.Review{{ReviewType: domain.ReviewTypeCritic, Author: "IGN", Text: "Good."}},
+		[]domain.Review{{ReviewType: domain.ReviewTypeUser, Author: "P", Text: "Fun."}})
+	require.NoError(t, err)
+
+	body := strings.ToLower(string(capturedBody))
+	require.Contains(t, body, "russian", "промпт резюме должен требовать ответ на русском")
+}
+
+func TestTranslateToRussian_Mock(t *testing.T) {
+	expected := "Эпическое приключение.\n\nВторой абзац."
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": expected}},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	client := llm.NewClient(mockServer.URL+"/v1", "test-key", "gpt-4o", "local")
+	got, err := client.TranslateToRussian(context.Background(), "An epic adventure.\n\nSecond paragraph.")
+	require.NoError(t, err)
+	require.Equal(t, expected, got)
+}
+
+func TestTranslateToRussian_NoAPIKey_ReturnsUnavailableError(t *testing.T) {
+	client := llm.NewClient("http://llm.example.com/v1", "", "gpt-4o-mini", "local")
+	require.False(t, client.HasAPIKey())
+
+	got, err := client.TranslateToRussian(context.Background(), "Some description.")
+	require.ErrorIs(t, err, llm.ErrLLMUnavailable)
+	require.Empty(t, got)
+}
+
+func TestTranslateToRussian_EmptyText_ReturnsError(t *testing.T) {
+	client := llm.NewClient("http://llm.example.com/v1", "test-key", "gpt-4o", "local")
+	got, err := client.TranslateToRussian(context.Background(), "   ")
+	require.Error(t, err)
+	require.Empty(t, got)
+}
+
 func TestSummarizeVideoTranscriptWithLimit_TruncatesHeadTail(t *testing.T) {
 	var gotPrompt string
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
