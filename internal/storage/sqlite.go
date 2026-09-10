@@ -75,6 +75,7 @@ func (d *DB) migrate() error {
 		cover_url TEXT NOT NULL DEFAULT '',
 		developer TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
+		description_ru TEXT NOT NULL DEFAULT '',
 		video_url TEXT NOT NULL DEFAULT '',
 		release_date TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
@@ -179,6 +180,12 @@ func (d *DB) migrate() error {
 		_, _ = d.db.Exec(`ALTER TABLE game_reviews ADD COLUMN platform TEXT NOT NULL DEFAULT ''`)
 	}
 
+	// Миграция существующей БД: добавляем колонку description_ru (русский перевод описания), если её нет
+	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('games') WHERE name = 'description_ru'`).Scan(&colCount)
+	if colCount == 0 {
+		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN description_ru TEXT NOT NULL DEFAULT ''`)
+	}
+
 	// Чистка некорректно привязанных отзывов: строка с известной платформой,
 	// лежащая под другой платформой игры (артефакт копирования отзывов во все платформы).
 	_, _ = d.db.Exec(`
@@ -251,22 +258,38 @@ func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
 	}
 	defer tx.Rollback()
 
+	// Определяем, нужно ли инвалидировать кэш перевода описания.
+	// Сравниваем описание по нормализованному виду, чтобы косметические различия
+	// от скрейпера (пробелы, переносы) не сбрасывали перевод каждый цикл.
+	var existingDesc, existingRU string
+	scanErr := tx.QueryRowContext(ctx, `SELECT description, description_ru FROM games WHERE slug = ?`, game.Slug).
+		Scan(&existingDesc, &existingRU)
+	if scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return fmt.Errorf("read existing game description: %w", scanErr)
+	}
+	newDescriptionRU := existingRU
+	if game.Description != "" && normalizeSpaces(game.Description) != normalizeSpaces(existingDesc) {
+		newDescriptionRU = ""
+	}
+	game.DescriptionRU = newDescriptionRU
+
 	// 1. Upsert game
 	queryGame := `
-	INSERT INTO games (id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO games (id, slug, title, cover_url, developer, description, description_ru, video_url, release_date, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(slug) DO UPDATE SET
 		title = excluded.title,
 		cover_url = CASE WHEN excluded.cover_url != '' THEN excluded.cover_url ELSE games.cover_url END,
 		developer = CASE WHEN excluded.developer != '' THEN excluded.developer ELSE games.developer END,
 		description = CASE WHEN excluded.description != '' THEN excluded.description ELSE games.description END,
+		description_ru = excluded.description_ru,
 		video_url = CASE WHEN excluded.video_url != '' THEN excluded.video_url ELSE games.video_url END,
 		release_date = CASE WHEN excluded.release_date != '' THEN excluded.release_date ELSE games.release_date END,
 		updated_at = excluded.updated_at
 	RETURNING id;
 	`
 	err = tx.QueryRowContext(ctx, queryGame,
-		game.ID, game.Slug, game.Title, game.CoverURL, game.Developer, game.Description, game.VideoURL, game.ReleaseDate, game.CreatedAt, game.UpdatedAt,
+		game.ID, game.Slug, game.Title, game.CoverURL, game.Developer, game.Description, game.DescriptionRU, game.VideoURL, game.ReleaseDate, game.CreatedAt, game.UpdatedAt,
 	).Scan(&game.ID)
 	if err != nil {
 		return fmt.Errorf("upsert game row: %w", err)
@@ -299,14 +322,31 @@ func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
 	return tx.Commit()
 }
 
+// normalizeSpaces схлопывает последовательности пробельных символов в один пробел
+// и обрезает края. Нужен для устойчивого сравнения описаний из разных скрейпов.
+func normalizeSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// SaveGameTranslation сохраняет русский перевод описания игры.
+func (d *DB) SaveGameTranslation(ctx context.Context, gameID, descriptionRU string) error {
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE games SET description_ru = ? WHERE id = ?`,
+		strings.TrimSpace(descriptionRU), gameID)
+	if err != nil {
+		return fmt.Errorf("save game translation: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) GetGameBySlug(ctx context.Context, slug string) (*domain.Game, error) {
 	query := `
-	SELECT id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at
+	SELECT id, slug, title, cover_url, developer, description, description_ru, video_url, release_date, created_at, updated_at
 	FROM games WHERE slug = ?;
 	`
 	var game domain.Game
 	err := d.db.QueryRowContext(ctx, query, slug).Scan(
-		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
+		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.DescriptionRU, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -326,12 +366,12 @@ func (d *DB) GetGameBySlug(ctx context.Context, slug string) (*domain.Game, erro
 
 func (d *DB) GetGameByID(ctx context.Context, id string) (*domain.Game, error) {
 	query := `
-	SELECT id, slug, title, cover_url, developer, description, video_url, release_date, created_at, updated_at
+	SELECT id, slug, title, cover_url, developer, description, description_ru, video_url, release_date, created_at, updated_at
 	FROM games WHERE id = ?;
 	`
 	var game domain.Game
 	err := d.db.QueryRowContext(ctx, query, id).Scan(
-		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
+		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.DescriptionRU, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -415,7 +455,7 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 	}
 
 	query := fmt.Sprintf(`
-		SELECT g.id, g.slug, g.title, g.cover_url, g.developer, g.description, g.video_url, g.release_date, g.created_at, g.updated_at
+		SELECT g.id, g.slug, g.title, g.cover_url, g.developer, g.description, g.description_ru, g.video_url, g.release_date, g.created_at, g.updated_at
 		FROM games g
 		WHERE %s
 		ORDER BY %s
@@ -433,7 +473,7 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 	var games []domain.Game
 	for rows.Next() {
 		var g domain.Game
-		if err := rows.Scan(&g.ID, &g.Slug, &g.Title, &g.CoverURL, &g.Developer, &g.Description, &g.VideoURL, &g.ReleaseDate, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Slug, &g.Title, &g.CoverURL, &g.Developer, &g.Description, &g.DescriptionRU, &g.VideoURL, &g.ReleaseDate, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
 		games = append(games, g)

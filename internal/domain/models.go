@@ -25,17 +25,18 @@ func Now() time.Time {
 
 // Game представляет базовую сущность игры.
 type Game struct {
-	ID          string         `json:"id"`
-	Slug        string         `json:"slug"`
-	Title       string         `json:"title"`
-	CoverURL    string         `json:"cover_url"`
-	Developer   string         `json:"developer"`
-	Description string         `json:"description"`
-	VideoURL    string         `json:"video_url"`
-	ReleaseDate string         `json:"release_date"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	Platforms   []GamePlatform `json:"platforms,omitempty"`
+	ID            string         `json:"id"`
+	Slug          string         `json:"slug"`
+	Title         string         `json:"title"`
+	CoverURL      string         `json:"cover_url"`
+	Developer     string         `json:"developer"`
+	Description   string         `json:"description"`
+	DescriptionRU string         `json:"description_ru"`
+	VideoURL      string         `json:"video_url"`
+	ReleaseDate   string         `json:"release_date"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Platforms     []GamePlatform `json:"platforms,omitempty"`
 }
 
 // GamePlatform хранит оценки и данные игры для конкретной платформы (PC, PS5, Xbox Series X и т.д.).
