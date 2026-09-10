@@ -113,3 +113,18 @@ docker compose up --build -d
 make docker-up
 ```
 База данных SQLite сохраняется в volume `./data/metacrawler.db`.
+
+---
+
+## 🌿 Рабочий процесс (ветки и Pull Request)
+
+Прямой пуш в `main` запрещён. Каждая единица работы ведётся в feature-ветке, по завершении открывается Pull Request:
+
+```bash
+git checkout -b feat/my-change
+# ... правки, тесты ...
+git push -u origin feat/my-change
+gh pr create --base main --fill
+```
+
+PR сливается в `main` только после зелёных тестов (`go test -race ./...`, `go vet ./...`). Подробные правила - в `agents.md`.
