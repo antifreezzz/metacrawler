@@ -198,3 +198,51 @@ embedding∥YouTube (101мс последовательно → <95мс пара
 `TestWorker_RecrawlForcesSummaryRegen`, `TestWorker_CycleSkipsYouTubeWhenAnalysisExists`,
 `TestWorker_CycleSkipsSlugBeingRecrawled`, `TestWorker_RecrawlGameAsync` (переходы
 статуса), `TestWorker_RecrawlStatusError`, `TestRecrawlStatusEndpoint`.
+
+---
+
+# Walkthrough: русский язык для описаний и резюме
+
+Дата: 11.09.2026
+
+## Что сделано
+
+UI полностью русский, но описания и цитаты отзывов приходят с Metacritic на
+английском, а `SummarizeReviews` генерировал резюме на английском (при том что
+YouTube-саммари уже было русским - рассинхрон).
+
+### 1. Резюме отзывов на русском
+
+Промпт `SummarizeReviews` дополнен требованием писать значения JSON на русском,
+ключи схемы не меняются. Покрыто `TestSummarizeReviews_AsksForRussianOutput`.
+Миграция БД не требуется - резюме перегенерируются через существующий
+`force`-пересбор части `summaries`.
+
+### 2. Перевод описания игры (кэшируется)
+
+- `games.description_ru` (миграция `ALTER TABLE` для существующих БД),
+  `domain.Game.DescriptionRU`, `DB.SaveGameTranslation`.
+- `llm.TranslateToRussian`: при недоступности LLM возвращает `ErrLLMUnavailable`,
+  выдуманный перевод не пишется (принцип честности данных); сохраняется разбиение
+  на абзацы.
+- Новый шаг `processGame`: в обычном цикле переводит только если перевода ещё
+  нет; `force` (пересбор) перезаписывает. Неудача LLM оставляет поле пустым,
+  в UI показывается оригинал, повтор - в следующем цикле.
+- Инвалидация кэша в `UpsertGame` по **нормализованному** описанию: косметические
+  различия скрейпа (пробелы/переносы) не сбрасывают перевод каждый час; реальное
+  изменение описания - сбрасывает.
+- Новая часть пересбора `translation` (`RecrawlOptions.Translation`, алиасы
+  `translate`/`trans`), чекбокс в модалке.
+
+### 3. Отображение
+
+На карточке игры русский текст - основной, оригинал - в сворачиваемом `<details>`
+«Оригинал (EN)». `og:description` отдаёт русскую версию, если она есть.
+
+Тесты: `TestGame_DescriptionRU_SaveAndRead`,
+`TestGame_DescriptionRU_PreservedWhenDescriptionUnchanged`,
+`TestGame_DescriptionRU_ResetWhenDescriptionChanges`,
+`TestTranslateToRussian_Mock`, `TestTranslateToRussian_NoAPIKey_ReturnsUnavailableError`,
+`TestTranslateToRussian_EmptyText_ReturnsError`, `TestWorker_TranslatesDescriptionOnCycle`,
+`TestWorker_CycleSkipsTranslationWhenPresent`, `TestWorker_RecrawlForcesTranslationRegen`,
+`TestRecrawlTranslationPart_Accepted`.
