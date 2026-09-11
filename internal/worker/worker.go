@@ -615,6 +615,19 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 	var game *domain.Game
 	var reviews []domain.Review
 
+	// Ошибки стадий записи собираются, чтобы не выдавать частичное сохранение
+	// за успешное и не помечать игру обработанной.
+	var writeErrs []error
+	var writeMu sync.Mutex
+	recordWrite := func(stage string, err error) {
+		if err == nil {
+			return
+		}
+		writeMu.Lock()
+		writeErrs = append(writeErrs, fmt.Errorf("%s: %w", stage, err))
+		writeMu.Unlock()
+	}
+
 	if opts.Scrape {
 		var scrapeErr error
 		game, reviews, scrapeErr = m.scraper.FetchGameDetails(ctx, slug)
@@ -657,6 +670,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 			p := savedGame.Platforms[i]
 			if err := m.db.RecordScorePoint(ctx, p.ID, p.Metascore, p.Userscore); err != nil {
 				m.addLog(fmt.Sprintf("  ⚠️ [History] Ошибка записи истории оценок (%s): %v", p.Platform, err))
+				recordWrite("score history", err)
 			}
 		}
 	}
@@ -694,7 +708,8 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 				rr.GamePlatformID = p.ID
 				platReviews = append(platReviews, rr)
 			}
-			c, _ := m.db.SaveReviews(ctx, platReviews)
+			c, saveErr := m.db.SaveReviews(ctx, platReviews)
+			recordWrite("save reviews "+p.Platform, saveErr)
 			savedCounts[i] = c
 			if c > 0 {
 				m.addLog(fmt.Sprintf("  💾 [Reviews] Платформа %s: новых отзывов %d", p.Platform, c))
@@ -704,8 +719,12 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 
 	// Гидратация отзывов и резюме для возвращаемого объекта и генерации резюме
 	for i := range savedGame.Platforms {
-		savedGame.Platforms[i].Reviews, _ = m.db.GetReviewsByPlatformID(ctx, savedGame.Platforms[i].ID)
-		if sum, _ := m.db.GetPlatformSummary(ctx, savedGame.Platforms[i].ID); sum != nil {
+		revs, loadErr := m.db.GetReviewsByPlatformID(ctx, savedGame.Platforms[i].ID)
+		recordWrite("load reviews "+savedGame.Platforms[i].Platform, loadErr)
+		savedGame.Platforms[i].Reviews = revs
+		if sum, sumErr := m.db.GetPlatformSummary(ctx, savedGame.Platforms[i].ID); sumErr != nil {
+			recordWrite("load summary "+savedGame.Platforms[i].Platform, sumErr)
+		} else if sum != nil {
 			savedGame.Platforms[i].Summary = sum
 		}
 	}
@@ -786,7 +805,9 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 					UserPros:       res.result.UserPros,
 					UserCons:       res.result.UserCons,
 				}
-				_ = m.db.UpsertPlatformSummary(ctx, platformSummary)
+				if sumErr := m.db.UpsertPlatformSummary(ctx, platformSummary); sumErr != nil {
+					recordWrite("summary "+p.Platform, sumErr)
+				}
 				savedGame.Platforms[j.platformIdx].Summary = platformSummary
 				if m.llm.HasAPIKey() {
 					m.addLog(fmt.Sprintf("  🤖 [LLM] Резюме отзывов (%s) сгенерировано через %s", p.Platform, m.llm.ChatModel()))
@@ -807,6 +828,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 			} else if strings.TrimSpace(translated) != "" {
 				if err := m.db.SaveGameTranslation(ctx, savedGame.ID, translated); err != nil {
 					m.addLog(fmt.Sprintf("  ⚠️ [DB] Ошибка сохранения перевода описания: %v", err))
+					recordWrite("translation", err)
 				} else {
 					savedGame.DescriptionRU = translated
 					m.addLog("  🌐 [LLM] Описание игры переведено на русский")
@@ -822,7 +844,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		analysisWG.Add(1)
 		go func() {
 			defer analysisWG.Done()
-			m.runEmbedding(ctx, savedGame)
+			recordWrite("embedding", m.runEmbedding(ctx, savedGame))
 		}()
 	}
 
@@ -830,16 +852,29 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		analysisWG.Add(1)
 		go func() {
 			defer analysisWG.Done()
-			m.runYouTubeAnalysis(ctx, savedGame, force)
+			recordWrite("youtube", m.runYouTubeAnalysis(ctx, savedGame, force))
 		}()
 	}
 
 	analysisWG.Wait()
 
-	// 8. Помечаем игру как обработанную (только при полном сборе)
+	// 8. Если обязательные стадии записи прошли, помечаем игру как обработанную.
+	// При частичном сбое игру не помечаем: она будет перечитана в следующем проходе.
+	writeMu.Lock()
+	failedStages := len(writeErrs)
+	joinedErr := errors.Join(writeErrs...)
+	writeMu.Unlock()
+
+	if failedStages > 0 {
+		m.addLog(fmt.Sprintf("  ⚠️ [DB] Игра \"%s\" сохранена частично (стадий с ошибкой: %d), повтор при следующем проходе", savedGame.Title, failedStages))
+		return savedGame, fmt.Errorf("game %s saved with %d failed stage(s): %w", slug, failedStages, joinedErr)
+	}
+
 	if opts.Scrape {
 		if today != "" {
-			_ = m.db.MarkProcessed(ctx, slug, today)
+			if err := m.db.MarkProcessed(ctx, slug, today); err != nil {
+				return savedGame, fmt.Errorf("mark processed: %w", err)
+			}
 			m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу на дату %s (UTC+3)", savedGame.Title, today))
 		} else {
 			m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу", savedGame.Title))
@@ -850,42 +885,55 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 }
 
 // runEmbedding генерирует и сохраняет векторное представление игры.
-func (m *Manager) runEmbedding(ctx context.Context, savedGame *domain.Game) {
+func (m *Manager) runEmbedding(ctx context.Context, savedGame *domain.Game) error {
 	textForEmbedding := fmt.Sprintf("%s. %s. Developer: %s", savedGame.Title, savedGame.Description, savedGame.Developer)
 	vec, embErr := m.llm.GetEmbedding(ctx, textForEmbedding)
 	if embErr != nil {
 		m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка получения вектора: %v", embErr))
-		return
+		return fmt.Errorf("get embedding: %w", embErr)
 	}
 	if len(vec) == 0 {
-		return
+		return nil
 	}
-	_ = m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
+	if err := m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
 		GameID:     savedGame.ID,
 		Vector:     vec,
 		Dimensions: len(vec),
-	})
+	}); err != nil {
+		m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка сохранения вектора: %v", err))
+		return fmt.Errorf("save embedding: %w", err)
+	}
 	if m.llm.HasAPIKey() {
 		m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор получен через %s (%d dims)", m.llm.EmbeddingModel(), len(vec)))
 	} else {
 		m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор сгенерирован локально (детерминированный фоллбэк, %d dims)", len(vec)))
 	}
+	return nil
 }
 
 // runYouTubeAnalysis ищет летсплей и сохраняет саммари. В обычном цикле пропускает
 // игру, если анализ уже есть; force=true (пересбор) обновляет его.
-func (m *Manager) runYouTubeAnalysis(ctx context.Context, savedGame *domain.Game, force bool) {
+func (m *Manager) runYouTubeAnalysis(ctx context.Context, savedGame *domain.Game, force bool) error {
 	if !force {
-		if existing, _ := m.db.GetYouTubeAnalysis(ctx, savedGame.ID); existing != nil {
-			return
+		existing, err := m.db.GetYouTubeAnalysis(ctx, savedGame.ID)
+		if err != nil {
+			return fmt.Errorf("get youtube analysis: %w", err)
+		}
+		if existing != nil {
+			return nil
 		}
 	}
 	ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
 	if ytErr != nil {
 		m.addLog(fmt.Sprintf("  ⚠️ [YouTube] Летсплей не найден или ошибка: %v", ytErr))
-	} else if ytAnalysis != nil {
-		_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
+		return nil
 	}
+	if ytAnalysis != nil {
+		if err := m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis); err != nil {
+			return fmt.Errorf("save youtube analysis: %w", err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) applyCooldown(ctx context.Context) {

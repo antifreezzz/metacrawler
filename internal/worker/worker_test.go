@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	"metacrawler/internal/config"
 	"metacrawler/internal/domain"
@@ -258,6 +260,43 @@ func TestWorker_NewReleasesCursorNotAdvancedOnError(t *testing.T) {
 
 	lastDate, _ := db.GetState(ctx, "last_crawl_date")
 	require.NotEqual(t, today, lastDate, "дата не должна фиксироваться при сбое обработки")
+}
+
+// TestWorker_PartialWriteDoesNotMarkProcessed: при сбое стадии записи игра не
+// помечается обработанной и не считается успешно сохранённой.
+func TestWorker_PartialWriteDoesNotMarkProcessed(t *testing.T) {
+	dsn := t.TempDir() + "/partial.db"
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{CrawlDelayMinMs: 1, CrawlDelayMaxMs: 2}
+	scraperMock := new(MockScraper)
+	llmMock := new(MockLLM)
+	mgr := worker.NewManager(db, scraperMock, llmMock, nil, cfg)
+
+	ctx := context.Background()
+	game, reviews := sampleGame("partial-game")
+	scraperMock.On("FetchGameDetails", mock.Anything, "partial-game").Return(game, reviews, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&llm.SummaryResult{CriticPros: "p"}, nil).Maybe()
+
+	// Ломаем стадию эмбеддинга: таблицы нет, запись должна упасть.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP TABLE game_embeddings`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	_, err = mgr.RecrawlGame(ctx, "partial-game", worker.AllRecrawlOptions())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed stage")
+
+	today := domain.Now().Format("2006-01-02")
+	processed, err := db.IsProcessedOnDate(ctx, "partial-game", today)
+	require.NoError(t, err)
+	require.False(t, processed, "при сбое стадии игра не должна помечаться обработанной")
 }
 
 func TestWorker_DayRolloverReset(t *testing.T) {
