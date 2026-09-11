@@ -50,6 +50,18 @@ func (m *MockLLM) GetEmbedding(ctx context.Context, text string) ([]float32, err
 	return args.Get(0).([]float32), args.Error(1)
 }
 
+func (m *MockLLM) TranslateToRussian(ctx context.Context, text string) (string, error) {
+	// Перевод стал частью обычного цикла, поэтому по умолчанию возвращаем
+	// детерминированный результат, не требуя явного expectation в каждом тесте.
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "TranslateToRussian" {
+			args := m.Called(ctx, text)
+			return args.String(0), args.Error(1)
+		}
+	}
+	return "RU:" + text, nil
+}
+
 func (m *MockLLM) HasAPIKey() bool {
 	return false
 }
@@ -308,6 +320,7 @@ func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
 type recordingLLM struct {
 	mu             sync.Mutex
 	summarizeCalls int
+	translateCalls int
 	peakConcurrent int
 	current        int
 	delay          time.Duration
@@ -337,6 +350,13 @@ func (m *recordingLLM) GetEmbedding(ctx context.Context, text string) ([]float32
 	return []float32{0.1}, nil
 }
 
+func (m *recordingLLM) TranslateToRussian(ctx context.Context, text string) (string, error) {
+	m.mu.Lock()
+	m.translateCalls++
+	m.mu.Unlock()
+	return "RU:" + text, nil
+}
+
 func (m *recordingLLM) HasAPIKey() bool        { return true }
 func (m *recordingLLM) ChatModel() string      { return "test-model" }
 func (m *recordingLLM) EmbeddingModel() string { return "test-emb" }
@@ -362,11 +382,13 @@ func TestParseRecrawlOptions(t *testing.T) {
 	}{
 		{"", worker.AllRecrawlOptions()},
 		{"all", worker.AllRecrawlOptions()},
-		{"scrape,summaries,youtube,embedding", worker.AllRecrawlOptions()},
+		{"scrape,summaries,youtube,embedding,translation", worker.AllRecrawlOptions()},
 		{"scrape", worker.RecrawlOptions{Scrape: true}},
 		{"summaries", worker.RecrawlOptions{Summaries: true}},
 		{"youtube", worker.RecrawlOptions{YouTube: true}},
 		{"embedding", worker.RecrawlOptions{Embedding: true}},
+		{"translation", worker.RecrawlOptions{Translation: true}},
+		{"translate", worker.RecrawlOptions{Translation: true}},
 		{" summary , youtube ", worker.RecrawlOptions{Summaries: true, YouTube: true}},
 		{"unknown", worker.RecrawlOptions{}},
 	}
@@ -453,6 +475,72 @@ func TestWorker_RecrawlForcesSummaryRegen(t *testing.T) {
 	require.Equal(t, 2, recLLM.summarizeCalls,
 		"force-пересбор должен регенерировать резюме даже без новых отзывов")
 	require.NotEmpty(t, saved.Platforms[0].Reviews)
+}
+
+func TestWorker_TranslatesDescriptionOnCycle(t *testing.T) {
+	recLLM := &recordingLLM{}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+	game, reviews := sampleGame("translate-game")
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"translate-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "translate-game").Return(game, reviews, nil).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, 1, recLLM.translateCalls, "описание должно быть переведено в обычном цикле")
+
+	saved, err := db.GetGameBySlug(ctx, "translate-game")
+	require.NoError(t, err)
+	require.Equal(t, "RU:Description of translate-game", saved.DescriptionRU)
+}
+
+func TestWorker_CycleSkipsTranslationWhenPresent(t *testing.T) {
+	recLLM := &recordingLLM{}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+	game, reviews := sampleGame("already-translated")
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "already-translated")
+	require.NoError(t, err)
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Готовый перевод"))
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"already-translated"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "already-translated").Return(game, reviews, nil).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, 0, recLLM.translateCalls,
+		"перевод не должен пересобираться, если описание не изменилось и перевод уже есть")
+
+	final, err := db.GetGameBySlug(ctx, "already-translated")
+	require.NoError(t, err)
+	require.Equal(t, "Готовый перевод", final.DescriptionRU)
+}
+
+func TestWorker_RecrawlForcesTranslationRegen(t *testing.T) {
+	recLLM := &recordingLLM{}
+	db, scraperMock, mgr := setupWorkerEnvWithLLM(t, recLLM)
+	defer db.Close()
+
+	ctx := context.Background()
+	game, _ := sampleGame("force-translate")
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "force-translate")
+	require.NoError(t, err)
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Старый перевод"))
+
+	// force-пересбор только перевода: скрейпер не вызывается, перевод перезаписывается.
+	updated, err := mgr.RecrawlGame(ctx, "force-translate", worker.RecrawlOptions{Translation: true})
+	require.NoError(t, err)
+	require.Equal(t, 1, recLLM.translateCalls)
+	require.Equal(t, "RU:Description of force-translate", updated.DescriptionRU)
+	scraperMock.AssertNotCalled(t, "FetchGameDetails", mock.Anything, mock.Anything)
 }
 
 func TestWorker_CycleSkipsYouTubeWhenAnalysisExists(t *testing.T) {
@@ -579,6 +667,10 @@ func (m *slowingEmbedLLM) SummarizeReviews(ctx context.Context, title, platform 
 func (m *slowingEmbedLLM) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	time.Sleep(60 * time.Millisecond)
 	return []float32{0.1, 0.2}, nil
+}
+
+func (m *slowingEmbedLLM) TranslateToRussian(ctx context.Context, text string) (string, error) {
+	return "RU:" + text, nil
 }
 
 func (m *slowingEmbedLLM) HasAPIKey() bool        { return false }
@@ -743,7 +835,7 @@ func TestWorker_RecrawlGameAsync(t *testing.T) {
 	state, ok := mgr.RecrawlStatus("async-target")
 	require.True(t, ok)
 	require.Equal(t, "running", state.Status)
-	require.Equal(t, "scrape,summaries,youtube,embedding", state.Options)
+	require.Equal(t, "scrape,summaries,youtube,embedding,translation", state.Options)
 
 	// 2. Повторный запуск для того же slug должен вернуть false (already active)
 	started2, err2 := mgr.RecrawlGameAsync("async-target", worker.AllRecrawlOptions())

@@ -89,6 +89,71 @@ func TestGameRepository_UpsertWithPlatforms(t *testing.T) {
 	require.Equal(t, 96, *ps5Platform.Metascore)
 }
 
+func TestGame_DescriptionRU_SaveAndRead(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{
+		ID:          "game-ru",
+		Slug:        "ru-game",
+		Title:       "RU Game",
+		Description: "An epic adventure.",
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	saved, err := db.GetGameBySlug(ctx, "ru-game")
+	require.NoError(t, err)
+	require.Empty(t, saved.DescriptionRU)
+
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Эпическое приключение."))
+
+	fetched, err := db.GetGameBySlug(ctx, "ru-game")
+	require.NoError(t, err)
+	require.Equal(t, "Эпическое приключение.", fetched.DescriptionRU)
+
+	byID, err := db.GetGameByID(ctx, saved.ID)
+	require.NoError(t, err)
+	require.Equal(t, "Эпическое приключение.", byID.DescriptionRU)
+}
+
+func TestGame_DescriptionRU_PreservedWhenDescriptionUnchanged(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{ID: "game-keep", Slug: "keep-game", Title: "Keep", Description: "Same text."}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "keep-game")
+	require.NoError(t, err)
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Тот же текст."))
+
+	// Повторный скрейп с тем же описанием (с лишними пробелами) не должен терять перевод.
+	game.Description = "Same   text. "
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	fetched, err := db.GetGameBySlug(ctx, "keep-game")
+	require.NoError(t, err)
+	require.Equal(t, "Тот же текст.", fetched.DescriptionRU,
+		"нормализованное сравнение не должно сбрасывать кэш при косметических различиях")
+}
+
+func TestGame_DescriptionRU_ResetWhenDescriptionChanges(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{ID: "game-reset", Slug: "reset-game", Title: "Reset", Description: "Old text."}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "reset-game")
+	require.NoError(t, err)
+	require.NoError(t, db.SaveGameTranslation(ctx, saved.ID, "Старый текст."))
+
+	game.Description = "Brand new description."
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	fetched, err := db.GetGameBySlug(ctx, "reset-game")
+	require.NoError(t, err)
+	require.Empty(t, fetched.DescriptionRU, "изменение описания обязано сбросить устаревший перевод")
+}
+
 func TestReviews_DeduplicationAndTypes(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
