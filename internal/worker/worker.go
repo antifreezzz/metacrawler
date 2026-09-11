@@ -279,6 +279,25 @@ func (m *Manager) GetStatus() StatusInfo {
 	}
 }
 
+// tryAcquireRun атомарно занимает глобальный слот выполнения цикла.
+// Возвращает false, если цикл уже выполняется (защита от гонки cron/manual).
+func (m *Manager) tryAcquireRun() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.status == "Running" {
+		return false
+	}
+	m.status = "Running"
+	return true
+}
+
+// IsRunning сообщает, выполняется ли цикл сбора прямо сейчас.
+func (m *Manager) IsRunning() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status == "Running"
+}
+
 func (m *Manager) setRunning(task string, total int) {
 	m.mu.Lock()
 	m.status = "Running"
@@ -324,12 +343,9 @@ func (m *Manager) ExecuteCycle(ctx context.Context) (int, error) {
 
 // ExecuteMode выполняет цикл в указанном режиме (авто суточный, принудительный new_releases, следующая страница или кастомная страница).
 func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int) (int, error) {
-	m.mu.Lock()
-	if m.status == "Running" {
-		m.mu.Unlock()
+	if !m.tryAcquireRun() {
 		return 0, fmt.Errorf("worker is already running")
 	}
-	m.mu.Unlock()
 
 	today := domain.Now().Format("2006-01-02")
 	lastCrawlDate, _ := m.db.GetState(ctx, "last_crawl_date")

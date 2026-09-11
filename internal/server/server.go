@@ -709,6 +709,13 @@ func (s *Server) handleWorkerRun(w http.ResponseWriter, r *http.Request) {
 		pageInt = p
 	}
 
+	if s.workerMgr.IsRunning() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":"already_running"}`))
+		return
+	}
+
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()

@@ -183,6 +183,39 @@ func TestWorker_SubsequentRun_StrictPaginationNoDofetch(t *testing.T) {
 	require.Equal(t, "2", nextPage)
 }
 
+// TestWorker_ConcurrentRunsRejected проверяет атомарный глобальный lock:
+// второй цикл не должен стартовать, пока идет первый.
+func TestWorker_ConcurrentRunsRejected(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	gate := make(chan struct{})
+	started := make(chan struct{})
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Run(func(mock.Arguments) {
+		close(started)
+		<-gate
+	}).Return([]string{}, nil).Once()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = mgr.ExecuteCycle(ctx)
+	}()
+
+	<-started
+	_, err := mgr.ExecuteCycle(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already running")
+	require.True(t, mgr.IsRunning())
+
+	close(gate)
+	wg.Wait()
+	require.False(t, mgr.IsRunning())
+}
+
 func TestWorker_DayRolloverReset(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()
