@@ -24,9 +24,75 @@ func newTestDB(t *testing.T) *storage.DB {
 	return db
 }
 
+// resetSchemaMigrations имитирует легаси-БД без версионирования: сбрасывает
+// таблицу версий, чтобы следующее открытие заново применило все миграции.
+func resetSchemaMigrations(t *testing.T, dsn string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP TABLE IF EXISTS schema_migrations`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+}
+
 func TestMigrate(t *testing.T) {
 	db := newTestDB(t)
 	require.NotNil(t, db)
+}
+
+func TestMigrate_RecordsSchemaVersion(t *testing.T) {
+	dsn := t.TempDir() + "/schema_version.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	defer raw.Close()
+
+	var version int
+	require.NoError(t, raw.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
+	require.Equal(t, 3, version, "все миграции должны быть зафиксированы в schema_migrations")
+}
+
+// TestMigrate_DoesNotRerunCleanupsOnEveryOpen фиксирует контракт: разрушительные
+// чистки теперь выполняются один раз как версия схемы, а не при каждом старте.
+func TestMigrate_DoesNotRerunCleanupsOnEveryOpen(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/no_rerun.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	game := &domain.Game{
+		Slug:      "no-rerun",
+		Title:     "No Rerun",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "no-rerun")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+	require.NoError(t, db.Close())
+
+	// Некорректная строка (платформа не совпадает с платформой игры) добавлена
+	// напрямую уже после миграции; версии не сбрасываем.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform)
+		VALUES (?, 'critic', 'WrongPlatform', NULL, 'wrong', 'hash-wrong', '', 'playstation-5')
+	`, platID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	revs, err := db2.GetReviewsByPlatformID(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, revs, 1, "чистки не должны повторяться при каждом открытии БД")
 }
 
 func TestGameRepository_UpsertWithPlatforms(t *testing.T) {
@@ -296,7 +362,8 @@ func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()
@@ -419,7 +486,8 @@ func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
 	}))
 	require.NoError(t, db.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()
@@ -474,7 +542,8 @@ func TestMigrate_CleansLegacyGluedReviewsAndMultiPlatformDups(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()

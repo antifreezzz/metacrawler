@@ -66,7 +66,101 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
+// migration - версионированная миграция схемы. Каждая применяется ровно один
+// раз и фиксируется в таблице schema_migrations в той же транзакции.
+type migration struct {
+	version     int
+	description string
+	run         func(*sql.Tx) error
+}
+
+// migrations упорядочены по версии. Разрушительные чистки вынесены сюда, чтобы
+// не выполняться при каждом старте приложения.
+var migrations = []migration{
+	{version: 1, description: "base schema", run: migrateBaseSchema},
+	{version: 2, description: "clean inconsistent review platform rows", run: migrateReviewLineageCleanup},
+	{version: 3, description: "clean fabricated summaries and stale youtube analyses", run: migrateFabricatedContentCleanup},
+}
+
 func (d *DB) migrate() error {
+	if _, err := d.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		description TEXT NOT NULL DEFAULT '',
+		applied_at DATETIME NOT NULL
+	);`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	current, err := d.currentSchemaVersion()
+	if err != nil {
+		return err
+	}
+
+	for _, m := range migrations {
+		if m.version <= current {
+			continue
+		}
+		if err := d.applyMigration(m); err != nil {
+			return fmt.Errorf("apply migration %d (%s): %w", m.version, m.description, err)
+		}
+	}
+	return nil
+}
+
+// currentSchemaVersion возвращает максимальную применённую версию (0 для новой
+// или легаси-БД без таблицы версий).
+func (d *DB) currentSchemaVersion() (int, error) {
+	var v sql.NullInt64
+	if err := d.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	if !v.Valid {
+		return 0, nil
+	}
+	return int(v.Int64), nil
+}
+
+func (d *DB) applyMigration(m migration) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := m.run(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)`,
+		m.version, m.description, time.Now().UTC(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func columnExists(tx *sql.Tx, table, column string) (bool, error) {
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// ensureColumn добавляет колонку, если её ещё нет (для легаси-БД).
+func ensureColumn(tx *sql.Tx, table, column, alter string) error {
+	exists, err := columnExists(tx, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.Exec(alter)
+	return err
+}
+
+func migrateBaseSchema(tx *sql.Tx) error {
 	ddl := `
 	CREATE TABLE IF NOT EXISTS games (
 		id TEXT PRIMARY KEY,
@@ -163,51 +257,51 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_game_platforms_game_id ON game_platforms(game_id);
 	CREATE INDEX IF NOT EXISTS idx_score_history_platform ON score_history(game_platform_id, recorded_at);
 	`
-	if _, err := d.db.Exec(ddl); err != nil {
+	if _, err := tx.Exec(ddl); err != nil {
 		return err
 	}
 
-	// Миграция существующей БД: добавляем колонку release_date, если её нет
-	var colCount int
-	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('games') WHERE name = 'release_date'`).Scan(&colCount)
-	if colCount == 0 {
-		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`)
+	if err := ensureColumn(tx, "games", "release_date", `ALTER TABLE games ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(tx, "game_reviews", "platform", `ALTER TABLE game_reviews ADD COLUMN platform TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(tx, "games", "description_ru", `ALTER TABLE games ADD COLUMN description_ru TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
 	}
 
-	// Миграция существующей БД: добавляем колонку platform в game_reviews, если её нет
-	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('game_reviews') WHERE name = 'platform'`).Scan(&colCount)
-	if colCount == 0 {
-		_, _ = d.db.Exec(`ALTER TABLE game_reviews ADD COLUMN platform TEXT NOT NULL DEFAULT ''`)
-	}
+	return nil
+}
 
-	// Миграция существующей БД: добавляем колонку description_ru (русский перевод описания), если её нет
-	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('games') WHERE name = 'description_ru'`).Scan(&colCount)
-	if colCount == 0 {
-		_, _ = d.db.Exec(`ALTER TABLE games ADD COLUMN description_ru TEXT NOT NULL DEFAULT ''`)
-	}
+func migrateReviewLineageCleanup(tx *sql.Tx) error {
 
 	// Чистка некорректно привязанных отзывов: строка с известной платформой,
 	// лежащая под другой платформой игры (артефакт копирования отзывов во все платформы).
-	_, _ = d.db.Exec(`
+	if _, err := tx.Exec(`
 		DELETE FROM game_reviews
 		WHERE platform != ''
 		  AND platform != (SELECT gp.platform FROM game_platforms gp WHERE gp.id = game_reviews.game_platform_id);
-	`)
+	`); err != nil {
+		return err
+	}
 
 	// Чистка легаси-отзывов старого парсера: в текст склеивались дата, оценка и автор
 	// ("Jan 5, 2024100 Parse\"Superb\""), а одна строка копировалась во все платформы.
 	// Такие строки не перезаписываются пересбором (другой content_hash), поэтому удаляются:
 	// ближайший цикл сбора вернет те же отзывы в чистом виде.
-	_, _ = d.db.Exec(`
+	if _, err := tx.Exec(`
 		DELETE FROM game_reviews
 		WHERE text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][0-9]*'
 		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][0-9]*'
 		   OR text GLOB '[A-Z][a-z][a-z] [0-9], [0-9][0-9][0-9][0-9][A-Za-z]*'
 		   OR text GLOB '[A-Z][a-z][a-z] [0-9][0-9], [0-9][0-9][0-9][0-9][A-Za-z]*';
-	`)
+	`); err != nil {
+		return err
+	}
 	// Схлопывание остаточных копий одного отзыва на нескольких платформах:
 	// в новой схеме отзыв живет только в своей платформе.
-	_, _ = d.db.Exec(`
+	if _, err := tx.Exec(`
 		DELETE FROM game_reviews
 		WHERE content_hash IN (
 			SELECT content_hash FROM game_reviews
@@ -216,20 +310,28 @@ func (d *DB) migrate() error {
 			SELECT MIN(id) FROM game_reviews
 			GROUP BY content_hash
 		);
-	`)
+	`); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateFabricatedContentCleanup(tx *sql.Tx) error {
 	// Чистка выдуманных резюме из старого фоллбэка (когда LLM была недоступна,
 	// генерировался шаблонный текст, нарушающий принцип честности данных).
-	_, _ = d.db.Exec(`
+	if _, err := tx.Exec(`
 		DELETE FROM platform_summaries
 		WHERE critic_pros LIKE '%высокое качество графики и проработку игрового мира%'
 		   OR critic_cons LIKE '%отдельные огрехи оптимизации и сложность освоения%'
 		   OR user_pros LIKE '%Игрокам нравится атмосфера, динамика и увлекательный сюжет%'
 		   OR user_cons LIKE '%жалуются на баланс и технические шероховатости%';
-	`)
+	`); err != nil {
+		return err
+	}
 
 	// Очистка ошибочно прикрепленных нерелевантных видео и шаблонных заглушек из прошлых запусков
-	_, _ = d.db.Exec(`
+	if _, err := tx.Exec(`
 		DELETE FROM youtube_analyses
 		WHERE summary LIKE '%исследует ключевые механики, боевую систему%'
 		   OR game_id IN (
@@ -237,7 +339,9 @@ func (d *DB) migrate() error {
 			WHERE (g.slug = 'ant-simulator-stock-market-game' AND LOWER(video_title) LIKE '%pocket ants%')
 			   OR (g.slug = 'escape-from-company' AND LOWER(video_title) LIKE '%star wars%')
 		);
-	`)
+	`); err != nil {
+		return err
+	}
 
 	return nil
 }
