@@ -23,11 +23,12 @@ var platformUserScores = map[string]string{
 	"playstation-5": "8.4",
 }
 
-func userScorePage(score string) string {
-	return fmt.Sprintf(`<!DOCTYPE html><html><body>
-<div class="product-reviews-score" data-testid="score-card-overview">
-  <div class="c-siteReviewScore" title="User score %s out of 10" aria-label="User score %s out of 10"><span>%s</span></div>
-</div></body></html>`, score, score, score)
+// withUserScore подменяет значение userscore в фикстуре страницы user-reviews.
+func withUserScore(html []byte, score string) []byte {
+	s := string(html)
+	s = strings.ReplaceAll(s, "User score 8.4 out", "User score "+score+" out")
+	s = strings.ReplaceAll(s, ">8.4</span>", ">"+score+"</span>")
+	return []byte(s)
 }
 
 func newFixtureServer(t *testing.T, criticStatus, userStatus int) (*httptest.Server, *map[string]int) {
@@ -60,13 +61,11 @@ func newFixtureServer(t *testing.T, criticStatus, userStatus int) (*httptest.Ser
 				w.WriteHeader(userStatus)
 				return
 			}
-			if platform := r.URL.Query().Get("platform"); platform != "" {
-				if score, ok := platformUserScores[platform]; ok {
-					_, _ = w.Write([]byte(userScorePage(score)))
-					return
-				}
+			score := platformUserScores[r.URL.Query().Get("platform")]
+			if score == "" {
+				score = "8.4"
 			}
-			_, _ = w.Write(userHTML)
+			_, _ = w.Write(withUserScore(userHTML, score))
 		default:
 			_, _ = w.Write(mainHTML)
 		}
@@ -75,7 +74,7 @@ func newFixtureServer(t *testing.T, criticStatus, userStatus int) (*httptest.Ser
 	return srv, &fetched
 }
 
-func TestFetchGameDetails_FetchesReviewSubpages(t *testing.T) {
+func TestFetchGameDetails_FetchesPerPlatformSubpages(t *testing.T) {
 	srv, fetched := newFixtureServer(t, http.StatusOK, http.StatusOK)
 
 	client, err := scraper.NewClientWithBaseURL(srv.URL)
@@ -86,30 +85,24 @@ func TestFetchGameDetails_FetchesReviewSubpages(t *testing.T) {
 	require.NotNil(t, game)
 	require.Equal(t, "Elden Ring", game.Title)
 
-	// Главная страница, две подстраницы отзывов и по одному запросу
-	// userscore на каждую платформу
+	// Главная страница и по паре подстраниц отзывов на каждую платформу
 	require.Equal(t, 1, (*fetched)["/game/elden-ring/"])
-	require.Equal(t, 1, (*fetched)["/game/elden-ring/critic-reviews/"])
-	require.Equal(t, 1, (*fetched)["/game/elden-ring/user-reviews/"])
-	for platform := range platformUserScores {
-		require.Equal(t, 1, (*fetched)["/game/elden-ring/user-reviews/?platform="+platform])
+	require.NotEmpty(t, game.Platforms)
+	for _, p := range game.Platforms {
+		require.Equal(t, 1, (*fetched)["/game/elden-ring/critic-reviews/?platform="+p.Platform], "critic page for %s", p.Platform)
+		require.Equal(t, 1, (*fetched)["/game/elden-ring/user-reviews/?platform="+p.Platform], "user page for %s", p.Platform)
 	}
 
-	// Отзывы объединены со всех трех страниц: 14 (главная) + 10 (critic) + 50 (user)
-	require.Len(t, reviews, 74)
-
-	// Платформа атрибутирована во всех отзывах (фикстуры - страница PS5)
-	var ps5Count, noPlatform int
+	// Каждый отзыв имеет установленную платформу (строгая привязка).
+	require.NotEmpty(t, reviews)
+	perPlatform := map[string]int{}
 	for _, r := range reviews {
-		switch r.Platform {
-		case "playstation-5":
-			ps5Count++
-		case "":
-			noPlatform++
-		}
+		require.NotEmpty(t, r.Platform, "review without platform must not be collected: %+v", r)
+		perPlatform[r.Platform]++
 	}
-	require.Equal(t, 74, ps5Count)
-	require.Equal(t, 0, noPlatform)
+	for _, p := range game.Platforms {
+		require.Greater(t, perPlatform[p.Platform], 0, "platform %s must have reviews", p.Platform)
+	}
 }
 
 // TestFetchGameDetails_PerPlatformUserScores проверяет, что userscore каждой
@@ -139,7 +132,7 @@ func TestFetchGameDetails_SubpageFailureIsNotFatal(t *testing.T) {
 	require.NoError(t, err)
 
 	game, reviews, err := client.FetchGameDetails(context.Background(), "elden-ring")
-	// Ошибка одной подстраницы не должна валить сбор целиком
+	// Ошибка подстраниц не должна валить сбор целиком
 	require.NoError(t, err)
 	require.NotNil(t, game)
 	require.Len(t, reviews, 14) // только отзывы с главной страницы

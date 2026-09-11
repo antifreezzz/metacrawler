@@ -613,9 +613,9 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		}
 	}
 
-	// 3. Распределение отзывов по платформам:
-	// отзыв с известной платформой сохраняется только в неё,
-	// отзыв без платформы - во все платформы (обратная совместимость с легаси-данными).
+	// 3. Распределение отзывов по платформам: отзыв сохраняется строго в свою
+	// платформу. Отзыв без установленной платформы не сохраняется вовсе, чтобы
+	// не создавать ложную платформенную привязку.
 	type summaryJob struct {
 		platformIdx   int
 		title         string
@@ -626,10 +626,20 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 
 	savedCounts := make(map[int]int)
 	if opts.Scrape {
+		unattributed := 0
+		for _, r := range reviews {
+			if r.Platform == "" {
+				unattributed++
+			}
+		}
+		if unattributed > 0 {
+			m.addLog(fmt.Sprintf("  ⚠️ [Reviews] Пропущено отзывов без платформы: %d", unattributed))
+		}
+
 		for i, p := range savedGame.Platforms {
 			var platReviews []domain.Review
 			for _, r := range reviews {
-				if r.Platform != "" && r.Platform != p.Platform {
+				if r.Platform != p.Platform {
 					continue
 				}
 				rr := r

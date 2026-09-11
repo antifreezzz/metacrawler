@@ -121,67 +121,52 @@ func (c *Client) FetchGameDetails(ctx context.Context, slug string) (*domain.Gam
 		return nil, nil, err
 	}
 
-	// Userscore принадлежит конкретной платформе: тянем его со страницы
-	// user-reviews этой платформы, а не копируем значение главной страницы.
+	// Отзывы и userscore принадлежат конкретной платформе, поэтому собираем
+	// подстраницы critic-reviews и user-reviews отдельно для каждой платформы,
+	// а не берем общий набор со страницы игры.
 	for i := range game.Platforms {
-		if game.Platforms[i].Platform == "" {
+		platform := game.Platforms[i].Platform
+		if platform == "" || platform == "all" {
 			continue
 		}
-		if score, scoreErr := c.FetchPlatformUserScore(ctx, slug, game.Platforms[i].Platform); scoreErr == nil && score != nil {
+		critic, _ := c.fetchPlatformReviews(ctx, slug, platform, "critic-reviews", domain.ReviewTypeCritic)
+		user, score := c.fetchPlatformReviews(ctx, slug, platform, "user-reviews", domain.ReviewTypeUser)
+		reviews = append(reviews, critic...)
+		reviews = append(reviews, user...)
+		if score != nil {
 			game.Platforms[i].Userscore = score
 		}
 	}
 
-	// Полные списки отзывов живут на подстраницах /critic-reviews/ и /user-reviews/.
-	// Главная страница содержит лишь несколько карточек-цитат.
-	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "critic-reviews", domain.ReviewTypeCritic)...)
-	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "user-reviews", domain.ReviewTypeUser)...)
-
 	return game, reviews, nil
 }
 
-// FetchPlatformUserScore получает userscore одной платформы с её страницы
-// /game/{slug}/user-reviews/?platform={platform}. Ошибка или "tbd" означает
-// отсутствие честных данных, а не повод выдумать значение.
-func (c *Client) FetchPlatformUserScore(ctx context.Context, slug, platform string) (*float64, error) {
-	if platform == "" {
-		return nil, fmt.Errorf("empty platform")
-	}
+// fetchPlatformReviews загружает подстраницу отзывов конкретной платформы и
+// проставляет платформу каждому отзыву. Для user-reviews дополнительно парсит
+// userscore. Ошибка загрузки не фатальна: возвращаются пустой список и nil.
+func (c *Client) fetchPlatformReviews(ctx context.Context, slug, platform, subpage string, reviewType domain.ReviewType) ([]domain.Review, *float64) {
 	if c.interRequestDelay > 0 {
 		select {
 		case <-time.After(c.interRequestDelay):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil
 		}
 	}
 
-	targetURL := fmt.Sprintf("%s/game/%s/user-reviews/?platform=%s", c.baseURL, slug, url.QueryEscape(platform))
+	targetURL := fmt.Sprintf("%s/game/%s/%s/?platform=%s", c.baseURL, slug, subpage, url.QueryEscape(platform))
 	body, err := c.get(ctx, targetURL)
 	if err != nil {
-		return nil, err
-	}
-	score := ParseUserScore(body)
-	if score == nil {
-		return nil, fmt.Errorf("no user score for platform %q", platform)
-	}
-	return score, nil
-}
-
-// fetchReviewSubpage загружает и парсит одну подстраницу отзывов.
-// Ошибка загрузки не фатальна: возвращаем пустой список, основной сбор продолжается.
-func (c *Client) fetchReviewSubpage(ctx context.Context, slug, subpage string, reviewType domain.ReviewType) []domain.Review {
-	if c.interRequestDelay > 0 {
-		select {
-		case <-time.After(c.interRequestDelay):
-		case <-ctx.Done():
-			return nil
-		}
+		return nil, nil
 	}
 
-	targetURL := fmt.Sprintf("%s/game/%s/%s/", c.baseURL, slug, subpage)
-	body, err := c.get(ctx, targetURL)
-	if err != nil {
-		return nil
+	reviews := ParseReviewSubpage(body, reviewType)
+	for i := range reviews {
+		reviews[i].Platform = platform
 	}
-	return ParseReviewSubpage(body, reviewType)
+
+	var score *float64
+	if subpage == "user-reviews" {
+		score = ParseUserScore(body)
+	}
+	return reviews, score
 }

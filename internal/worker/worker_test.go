@@ -101,8 +101,8 @@ func sampleGame(slug string) (*domain.Game, []domain.Review) {
 		},
 	}
 	reviews := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "Critic1", Text: "Good game"},
-		{ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Awesome"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "Critic1", Text: "Good game", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Awesome", Platform: "pc"},
 	}
 	return game, reviews
 }
@@ -288,10 +288,10 @@ func TestWorker_ReviewPlatformAttribution(t *testing.T) {
 		byPlatform[p.Platform] = authors
 	}
 
-	// Отзыв с платформой должен попасть только в свою платформу,
-	// отзыв без платформы - во все (обратная совместимость).
-	require.ElementsMatch(t, []string{"CriticPC", "CriticAny"}, byPlatform["pc"])
-	require.ElementsMatch(t, []string{"CriticPS5", "CriticAny"}, byPlatform["playstation-5"])
+	// Отзыв без установленной платформы не сохраняется ни на одну платформу
+	// (строгая платформенная привязка, без копирования на все).
+	require.ElementsMatch(t, []string{"CriticPC"}, byPlatform["pc"])
+	require.ElementsMatch(t, []string{"CriticPS5"}, byPlatform["playstation-5"])
 }
 
 func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
@@ -459,7 +459,7 @@ func TestWorker_RecrawlForcesSummaryRegen(t *testing.T) {
 		},
 	}
 	revs := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review", Platform: "pc"},
 	}
 	scraperMock.On("FetchGameDetails", mock.Anything, "force-game").Return(game, revs, nil).Once()
 
@@ -635,7 +635,9 @@ func TestWorker_ParallelPlatformSummaries(t *testing.T) {
 		},
 	}
 	revs := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "Review one"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "Review one", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C2", Text: "Review two", Platform: "playstation-5"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C3", Text: "Review three", Platform: "xbox-series-x"},
 	}
 	scraperMock.On("FetchGameDetails", mock.Anything, "parallel-game").Return(game, revs, nil).Once()
 
