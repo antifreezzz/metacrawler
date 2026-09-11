@@ -81,6 +81,7 @@ var migrations = []migration{
 	{version: 2, description: "clean inconsistent review platform rows", run: migrateReviewLineageCleanup},
 	{version: 3, description: "clean fabricated summaries and stale youtube analyses", run: migrateFabricatedContentCleanup},
 	{version: 4, description: "add youtube analysis status", run: migrateYouTubeAnalysisStatus},
+	{version: 5, description: "drop fabricated all platform", run: migrateDropAllPlatform},
 }
 
 func (d *DB) migrate() error {
@@ -351,6 +352,15 @@ func migrateFabricatedContentCleanup(tx *sql.Tx) error {
 func migrateYouTubeAnalysisStatus(tx *sql.Tx) error {
 	// Легаси-строки считаются полноценным анализом; новые могут быть no_transcript.
 	return ensureColumn(tx, "youtube_analyses", "status", `ALTER TABLE youtube_analyses ADD COLUMN status TEXT NOT NULL DEFAULT 'analyzed'`)
+}
+
+func migrateDropAllPlatform(tx *sql.Tx) error {
+	// "all" была искусственной платформой, привязка к ней не несет данных;
+	// связанные отзывы/резюме/история удаляются каскадом.
+	if _, err := tx.Exec(`DELETE FROM game_platforms WHERE platform = 'all'`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {

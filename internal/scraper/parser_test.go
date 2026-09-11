@@ -143,6 +143,16 @@ func TestParseGameDetails_ReviewPlatform(t *testing.T) {
 	}
 }
 
+func TestParseGameDetails_NoFabricatedAllPlatform(t *testing.T) {
+	// Если карточки платформ не распознаны, игра остается без платформ.
+	// Искусственная платформа "all" не должна создаваться.
+	data := []byte(`<!DOCTYPE html><html><head><script type="application/ld+json">{"@type":"VideoGame","name":"No Platforms","description":"desc"}</script></head><body></body></html>`)
+
+	game, _, err := scraper.ParseGameDetails("no-platforms", data)
+	require.NoError(t, err)
+	require.Empty(t, game.Platforms, "псевдоплатформа all не должна создаваться")
+}
+
 func TestParseUserScore(t *testing.T) {
 	data, err := os.ReadFile("../../testdata/game_user_reviews.html")
 	require.NoError(t, err)

@@ -53,7 +53,7 @@ func TestMigrate_RecordsSchemaVersion(t *testing.T) {
 
 	var version int
 	require.NoError(t, raw.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 4, version, "все миграции должны быть зафиксированы в schema_migrations")
+	require.Equal(t, 5, version, "все миграции должны быть зафиксированы в schema_migrations")
 }
 
 // TestMigrate_DoesNotRerunCleanupsOnEveryOpen фиксирует контракт: разрушительные
@@ -725,6 +725,32 @@ func TestListGames_ReleaseDateSorting(t *testing.T) {
 	require.Equal(t, "2022-11-10", games[1].ReleaseDate)
 	require.Equal(t, "Old Game", games[2].Title)
 	require.Equal(t, "2020-01-15", games[2].ReleaseDate)
+}
+
+// TestMigrate_RemovesFabricatedAllPlatform проверяет чистку искусственной
+// платформы "all", которая создавалась, когда карточки платформ не распознавались.
+func TestMigrate_RemovesFabricatedAllPlatform(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/all_platform.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	game := &domain.Game{
+		Slug:      "all-game",
+		Title:     "All Game",
+		Platforms: []domain.GamePlatform{{Platform: "all", PlatformURL: "/game/all-game"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	require.NoError(t, db.Close())
+
+	resetSchemaMigrations(t, dsn)
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	saved, err := db2.GetGameBySlug(ctx, "all-game")
+	require.NoError(t, err)
+	require.Empty(t, saved.Platforms, "искусственная платформа all должна быть удалена миграцией")
 }
 
 func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {

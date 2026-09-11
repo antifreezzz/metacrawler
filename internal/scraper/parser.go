@@ -241,13 +241,8 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 		}
 	})
 
-	// Если карточки не найдены, создаем дефолтную платформу "all"
-	if len(platformMap) == 0 {
-		platformMap["all"] = domain.GamePlatform{
-			Platform:    "all",
-			PlatformURL: "/game/" + slug,
-		}
-	}
+	// Если карточки платформ не распознаны, игра остается без платформ:
+	// искусственная платформа "all" не создается (честность данных).
 
 	for _, p := range platformMap {
 		game.Platforms = append(game.Platforms, p)
