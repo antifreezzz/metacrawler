@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +39,58 @@ func resetSchemaMigrations(t *testing.T, dsn string) {
 func TestMigrate(t *testing.T) {
 	db := newTestDB(t)
 	require.NotNil(t, db)
+}
+
+// TestReadPool_SeesCommittedWrites проверяет, что пул чтения по файлу видит
+// закоммиченные данные (WAL), а не отдельную/устаревшую БД.
+func TestReadPool_SeesCommittedWrites(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/pool.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertGame(ctx, &domain.Game{Slug: "pool-game", Title: "Pool Game"}))
+
+	game, err := db.GetGameBySlug(ctx, "pool-game")
+	require.NoError(t, err)
+	require.NotNil(t, game)
+	require.Equal(t, "Pool Game", game.Title)
+}
+
+// TestReadPool_ConcurrentReadsWithWrites гоняет чтения и записи параллельно,
+// проверяя под -race отсутствие гонок и блокировок.
+func TestReadPool_ConcurrentReadsWithWrites(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/pool_concurrent.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertGame(ctx, &domain.Game{Slug: "seed", Title: "Seed"}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = db.SetState(ctx, "cursor", fmt.Sprintf("%d", i))
+		}
+	}()
+
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				_, _ = db.GetGameBySlug(ctx, "seed")
+				_, _ = db.ListGames(ctx, storage.ListFilter{Limit: 10})
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestMigrate_RecordsSchemaVersion(t *testing.T) {

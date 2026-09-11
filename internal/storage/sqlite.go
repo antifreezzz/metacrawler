@@ -20,7 +20,8 @@ import (
 )
 
 type DB struct {
-	db *sql.DB
+	db     *sql.DB
+	readDB *sql.DB
 }
 
 func New(dsn string) (*DB, error) {
@@ -54,15 +55,46 @@ func New(dsn string) (*DB, error) {
 	}
 
 	storageDB := &DB{db: db}
+	isMemory := dsn == ":memory:" || strings.HasPrefix(dsn, "file::memory:")
+	if isMemory {
+		// Для in-memory БД второе соединение - это другая пустая база,
+		// поэтому чтения и записи идут через одно соединение.
+		storageDB.readDB = db
+	} else {
+		readDB, readErr := sql.Open("sqlite", readDSN(dsn))
+		if readErr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open sqlite read pool: %w", readErr)
+		}
+		// WAL позволяет нескольким читателям работать параллельно с одним писателем.
+		readDB.SetMaxOpenConns(8)
+		readDB.SetMaxIdleConns(8)
+		storageDB.readDB = readDB
+	}
+
 	if err := storageDB.migrate(); err != nil {
-		_ = db.Close()
+		_ = storageDB.Close()
 		return nil, fmt.Errorf("migrate db: %w", err)
 	}
 
 	return storageDB, nil
 }
 
+// readDSN добавляет к DSN pragmas для пула чтения: read-only, busy_timeout,
+// foreign_keys. Pragmas в DSN применяются к каждому соединению пула.
+func readDSN(dsn string) string {
+	pragmas := "_pragma=busy_timeout(5000)&_pragma=query_only(1)&_pragma=foreign_keys(1)"
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + pragmas
+}
+
 func (d *DB) Close() error {
+	if d.readDB != nil && d.readDB != d.db {
+		_ = d.readDB.Close()
+	}
 	return d.db.Close()
 }
 
@@ -480,7 +512,7 @@ func (d *DB) GetGameBySlug(ctx context.Context, slug string) (*domain.Game, erro
 	FROM games WHERE slug = ?;
 	`
 	var game domain.Game
-	err := d.db.QueryRowContext(ctx, query, slug).Scan(
+	err := d.readDB.QueryRowContext(ctx, query, slug).Scan(
 		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.DescriptionRU, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -505,7 +537,7 @@ func (d *DB) GetGameByID(ctx context.Context, id string) (*domain.Game, error) {
 	FROM games WHERE id = ?;
 	`
 	var game domain.Game
-	err := d.db.QueryRowContext(ctx, query, id).Scan(
+	err := d.readDB.QueryRowContext(ctx, query, id).Scan(
 		&game.ID, &game.Slug, &game.Title, &game.CoverURL, &game.Developer, &game.Description, &game.DescriptionRU, &game.VideoURL, &game.ReleaseDate, &game.CreatedAt, &game.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -553,7 +585,7 @@ func (d *DB) CountGames(ctx context.Context, filter ListFilter) (int, error) {
 	`, strings.Join(whereClauses, " AND "))
 
 	var count int
-	if err := d.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := d.readDB.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count games query: %w", err)
 	}
 	return count, nil
@@ -599,7 +631,7 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 
 	args = append(args, filter.Limit, filter.Offset)
 
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := d.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list games query: %w", err)
 	}
@@ -627,7 +659,7 @@ func (d *DB) ListGames(ctx context.Context, filter ListFilter) ([]domain.Game, e
 
 func (d *DB) GetDistinctPlatforms(ctx context.Context) ([]string, error) {
 	query := `SELECT DISTINCT platform FROM game_platforms WHERE platform != '' ORDER BY platform ASC;`
-	rows, err := d.db.QueryContext(ctx, query)
+	rows, err := d.readDB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -650,7 +682,7 @@ func (d *DB) getPlatformsForGame(ctx context.Context, gameID string) ([]domain.G
 	FROM game_platforms WHERE game_id = ?
 	ORDER BY platform ASC;
 	`
-	rows, err := d.db.QueryContext(ctx, query, gameID)
+	rows, err := d.readDB.QueryContext(ctx, query, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -714,7 +746,7 @@ func (d *DB) GetReviewsByPlatformID(ctx context.Context, platformID int64) ([]do
 	FROM game_reviews WHERE game_platform_id = ?
 	ORDER BY id ASC;
 	`
-	rows, err := d.db.QueryContext(ctx, query, platformID)
+	rows, err := d.readDB.QueryContext(ctx, query, platformID)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +789,7 @@ func (d *DB) GetPlatformSummary(ctx context.Context, platformID int64) (*domain.
 	FROM platform_summaries WHERE game_platform_id = ?;
 	`
 	var s domain.PlatformSummary
-	err := d.db.QueryRowContext(ctx, query, platformID).Scan(
+	err := d.readDB.QueryRowContext(ctx, query, platformID).Scan(
 		&s.ID, &s.GamePlatformID, &s.CriticPros, &s.CriticCons, &s.UserPros, &s.UserCons, &s.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -797,7 +829,7 @@ func (d *DB) latestScorePoint(ctx context.Context, platformID int64) (*domain.Sc
 	var metascore sql.NullInt64
 	var userscore sql.NullFloat64
 	var recordedAt time.Time
-	err := d.db.QueryRowContext(ctx, `
+	err := d.readDB.QueryRowContext(ctx, `
 		SELECT metascore, userscore, recorded_at FROM score_history
 		WHERE game_platform_id = ?
 		ORDER BY recorded_at DESC, id DESC LIMIT 1;
@@ -836,7 +868,7 @@ func (d *DB) GetScoreHistory(ctx context.Context, platformID int64) ([]domain.Sc
 	FROM score_history WHERE game_platform_id = ?
 	ORDER BY recorded_at ASC, id ASC;
 	`
-	rows, err := d.db.QueryContext(ctx, query, platformID)
+	rows, err := d.readDB.QueryContext(ctx, query, platformID)
 	if err != nil {
 		return nil, fmt.Errorf("get score history: %w", err)
 	}
@@ -867,7 +899,7 @@ func (d *DB) GetScoreHistory(ctx context.Context, platformID int64) ([]domain.Sc
 func (d *DB) IsProcessedOnDate(ctx context.Context, slug, dateStr string) (bool, error) {
 	query := `SELECT 1 FROM crawl_history WHERE slug = ? AND date_str = ? LIMIT 1;`
 	var dummy int
-	err := d.db.QueryRowContext(ctx, query, slug, dateStr).Scan(&dummy)
+	err := d.readDB.QueryRowContext(ctx, query, slug, dateStr).Scan(&dummy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -889,7 +921,7 @@ func (d *DB) MarkProcessed(ctx context.Context, slug, dateStr string) error {
 func (d *DB) GetState(ctx context.Context, key string) (string, error) {
 	query := `SELECT value FROM crawler_state WHERE key = ?;`
 	var val string
-	err := d.db.QueryRowContext(ctx, query, key).Scan(&val)
+	err := d.readDB.QueryRowContext(ctx, query, key).Scan(&val)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -926,7 +958,7 @@ func (d *DB) SaveEmbedding(ctx context.Context, emb *domain.GameEmbedding) error
 
 func (d *DB) GetAllEmbeddings(ctx context.Context) ([]domain.GameEmbedding, error) {
 	query := `SELECT game_id, vector, dimensions FROM game_embeddings;`
-	rows, err := d.db.QueryContext(ctx, query)
+	rows, err := d.readDB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -975,7 +1007,7 @@ func (d *DB) GetYouTubeAnalysis(ctx context.Context, gameID string) (*domain.You
 	FROM youtube_analyses WHERE game_id = ?;
 	`
 	var y domain.YouTubeAnalysis
-	err := d.db.QueryRowContext(ctx, query, gameID).Scan(
+	err := d.readDB.QueryRowContext(ctx, query, gameID).Scan(
 		&y.ID, &y.GameID, &y.VideoID, &y.VideoTitle, &y.VideoURL, &y.ChannelName, &y.ViewCount, &y.Summary, &y.Status, &y.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
