@@ -107,10 +107,10 @@ CRON_SCHEDULE=0 * * * *
 CRAWL_DELAY_MIN_MS=2000
 CRAWL_DELAY_MAX_MS=4000
 
-# Авторизация админ-панели
+# Авторизация админ-панели (обязательны сильные значения)
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=strong_password_here
-SESSION_SECRET=very-secret-key-change-me
+ADMIN_PASSWORD=REPLACE_WITH_STRONG_PASSWORD
+SESSION_SECRET=REPLACE_WITH_RANDOM_SECRET_AT_LEAST_32_CHARS
 
 # Проксирование на домашний llmcontrol через локальный туннельный сокет
 LLM_BASE_URL=http://localhost:8666/v1

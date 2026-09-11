@@ -22,6 +22,10 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
+
 	// Гарантируем наличие директории для БД SQLite
 	if err := os.MkdirAll("data", 0755); err != nil {
 		log.Fatalf("failed to create data dir: %v", err)

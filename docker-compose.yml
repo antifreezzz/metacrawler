@@ -18,8 +18,8 @@ services:
       - CRAWL_DELAY_MIN_MS=${CRAWL_DELAY_MIN_MS:-2000}
       - CRAWL_DELAY_MAX_MS=${CRAWL_DELAY_MAX_MS:-4000}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
-      - SESSION_SECRET=${SESSION_SECRET:-metacrawler-secret-key}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set to a strong value}
+      - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set to a random value}
       - EMBEDDING_ENGINE=${EMBEDDING_ENGINE:-local}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-local}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://localhost:8666/v1}
