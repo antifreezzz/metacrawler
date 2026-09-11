@@ -27,7 +27,7 @@ func New(dsn string) (*DB, error) {
 	if dsn != ":memory:" && !strings.HasPrefix(dsn, "file::memory:") {
 		dir := filepath.Dir(dsn)
 		if dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0777); err != nil {
+			if err := os.MkdirAll(dir, 0700); err != nil {
 				return nil, fmt.Errorf("create db directory %s: %w", dir, err)
 			}
 		}
