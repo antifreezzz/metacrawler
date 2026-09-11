@@ -99,6 +99,12 @@ type GameEmbedding struct {
 	Dimensions int       `json:"dimensions"`
 }
 
+// Статусы YouTube-анализа: честно отражают, сформирован ли вывод по словам блогера.
+const (
+	YouTubeStatusAnalyzed     = "analyzed"      // вывод построен по реальному транскрипту
+	YouTubeStatusNoTranscript = "no_transcript" // ролик найден, транскрипт недоступен
+)
+
 // YouTubeAnalysis хранит данные найденного летсплея и саммари рассказа блоггера.
 type YouTubeAnalysis struct {
 	ID          int64     `json:"id"`
@@ -109,5 +115,6 @@ type YouTubeAnalysis struct {
 	ChannelName string    `json:"channel_name"`
 	ViewCount   int64     `json:"view_count"`
 	Summary     string    `json:"summary"`
+	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 }

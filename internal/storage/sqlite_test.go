@@ -53,7 +53,7 @@ func TestMigrate_RecordsSchemaVersion(t *testing.T) {
 
 	var version int
 	require.NoError(t, raw.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 3, version, "все миграции должны быть зафиксированы в schema_migrations")
+	require.Equal(t, 4, version, "все миграции должны быть зафиксированы в schema_migrations")
 }
 
 // TestMigrate_DoesNotRerunCleanupsOnEveryOpen фиксирует контракт: разрушительные
@@ -758,6 +758,33 @@ func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
 	require.Equal(t, "ProGamer", fetched.ChannelName)
 	require.Equal(t, int64(1500000), fetched.ViewCount)
 	require.Contains(t, fetched.Summary, "Блоггер в восторге")
+	require.Equal(t, domain.YouTubeStatusAnalyzed, fetched.Status)
+}
+
+// TestYouTubeAnalysis_StatusRoundTrip фиксирует честный статус анализа:
+// ролик без транскрипта хранится отдельно от полноценного вывода.
+func TestYouTubeAnalysis_StatusRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{ID: "g-yt-2", Slug: "silent-game", Title: "Silent Game"}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	require.NoError(t, db.UpsertYouTubeAnalysis(ctx, &domain.YouTubeAnalysis{
+		GameID:      game.ID,
+		VideoID:     "vid-no-subs",
+		VideoTitle:  "Silent Game Gameplay",
+		VideoURL:    "https://www.youtube.com/watch?v=vid-no-subs",
+		ChannelName: "QuietPlayer",
+		Summary:     "",
+		Status:      domain.YouTubeStatusNoTranscript,
+	}))
+
+	fetched, err := db.GetYouTubeAnalysis(ctx, game.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.Equal(t, domain.YouTubeStatusNoTranscript, fetched.Status)
+	require.Empty(t, fetched.Summary)
 }
 
 func TestCountGames_WithFilters(t *testing.T) {

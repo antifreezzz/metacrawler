@@ -80,6 +80,7 @@ var migrations = []migration{
 	{version: 1, description: "base schema", run: migrateBaseSchema},
 	{version: 2, description: "clean inconsistent review platform rows", run: migrateReviewLineageCleanup},
 	{version: 3, description: "clean fabricated summaries and stale youtube analyses", run: migrateFabricatedContentCleanup},
+	{version: 4, description: "add youtube analysis status", run: migrateYouTubeAnalysisStatus},
 }
 
 func (d *DB) migrate() error {
@@ -240,6 +241,7 @@ func migrateBaseSchema(tx *sql.Tx) error {
 		channel_name TEXT NOT NULL DEFAULT '',
 		view_count INTEGER NOT NULL DEFAULT 0,
 		summary TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'analyzed',
 		created_at DATETIME NOT NULL,
 		UNIQUE(game_id)
 	);
@@ -344,6 +346,11 @@ func migrateFabricatedContentCleanup(tx *sql.Tx) error {
 	}
 
 	return nil
+}
+
+func migrateYouTubeAnalysisStatus(tx *sql.Tx) error {
+	// Легаси-строки считаются полноценным анализом; новые могут быть no_transcript.
+	return ensureColumn(tx, "youtube_analyses", "status", `ALTER TABLE youtube_analyses ADD COLUMN status TEXT NOT NULL DEFAULT 'analyzed'`)
 }
 
 func (d *DB) UpsertGame(ctx context.Context, game *domain.Game) error {
@@ -916,9 +923,12 @@ func (d *DB) GetAllEmbeddings(ctx context.Context) ([]domain.GameEmbedding, erro
 
 func (d *DB) UpsertYouTubeAnalysis(ctx context.Context, y *domain.YouTubeAnalysis) error {
 	y.CreatedAt = time.Now().UTC()
+	if y.Status == "" {
+		y.Status = domain.YouTubeStatusAnalyzed
+	}
 	query := `
-	INSERT INTO youtube_analyses (game_id, video_id, video_title, video_url, channel_name, view_count, summary, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO youtube_analyses (game_id, video_id, video_title, video_url, channel_name, view_count, summary, status, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(game_id) DO UPDATE SET
 		video_id = excluded.video_id,
 		video_title = excluded.video_title,
@@ -926,22 +936,23 @@ func (d *DB) UpsertYouTubeAnalysis(ctx context.Context, y *domain.YouTubeAnalysi
 		channel_name = excluded.channel_name,
 		view_count = excluded.view_count,
 		summary = excluded.summary,
+		status = excluded.status,
 		created_at = excluded.created_at
 	RETURNING id;
 	`
 	return d.db.QueryRowContext(ctx, query,
-		y.GameID, y.VideoID, y.VideoTitle, y.VideoURL, y.ChannelName, y.ViewCount, y.Summary, y.CreatedAt,
+		y.GameID, y.VideoID, y.VideoTitle, y.VideoURL, y.ChannelName, y.ViewCount, y.Summary, y.Status, y.CreatedAt,
 	).Scan(&y.ID)
 }
 
 func (d *DB) GetYouTubeAnalysis(ctx context.Context, gameID string) (*domain.YouTubeAnalysis, error) {
 	query := `
-	SELECT id, game_id, video_id, video_title, video_url, channel_name, view_count, summary, created_at
+	SELECT id, game_id, video_id, video_title, video_url, channel_name, view_count, summary, status, created_at
 	FROM youtube_analyses WHERE game_id = ?;
 	`
 	var y domain.YouTubeAnalysis
 	err := d.db.QueryRowContext(ctx, query, gameID).Scan(
-		&y.ID, &y.GameID, &y.VideoID, &y.VideoTitle, &y.VideoURL, &y.ChannelName, &y.ViewCount, &y.Summary, &y.CreatedAt,
+		&y.ID, &y.GameID, &y.VideoID, &y.VideoTitle, &y.VideoURL, &y.ChannelName, &y.ViewCount, &y.Summary, &y.Status, &y.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

@@ -981,35 +981,46 @@ func (c *Client) AnalyzeVideo(ctx context.Context, gameID, gameTitle string) (*d
 		return nil, fmt.Errorf("search letsplay: %w", err)
 	}
 
-	transcript, _ := c.FetchTranscript(ctx, videoInfo.VideoID, ParseDuration(videoInfo.Duration))
+	transcript, transcriptErr := c.FetchTranscript(ctx, videoInfo.VideoID, ParseDuration(videoInfo.Duration))
+	return c.analysisFromTranscript(ctx, gameID, gameTitle, videoInfo, transcript, transcriptErr), nil
+}
 
-	var summary string
-	if transcript != "" && c.llmClient != nil {
-		summary, _ = c.llmClient.SummarizeVideoTranscript(ctx, gameTitle, videoInfo.ChannelName, videoInfo.Title, transcript)
-	}
-	if summary == "" && transcript != "" {
-		summary = generateFallbackTranscriptSummary(gameTitle, videoInfo.ChannelName, transcript)
-	}
-	if summary == "" {
-		summary = fmt.Sprintf("Летсплей от канала %s (голосовые комментарии и субтитры к видео отсутствуют).", videoInfo.ChannelName)
-	}
-
-	return &domain.YouTubeAnalysis{
+// analysisFromTranscript строит результат анализа строго по реальному транскрипту.
+// Если транскрипта нет (ошибка загрузки или пустой текст), статус no_transcript,
+// а summary пустой: выдумывать вывод по словам блогера нельзя.
+func (c *Client) analysisFromTranscript(ctx context.Context, gameID, gameTitle string, videoInfo *VideoInfo, transcript string, transcriptErr error) *domain.YouTubeAnalysis {
+	analysis := &domain.YouTubeAnalysis{
 		GameID:      gameID,
 		VideoID:     videoInfo.VideoID,
 		VideoTitle:  videoInfo.Title,
 		VideoURL:    videoInfo.URL,
 		ChannelName: videoInfo.ChannelName,
 		ViewCount:   videoInfo.ViewCount,
-		Summary:     summary,
+		Status:      domain.YouTubeStatusNoTranscript,
 		CreatedAt:   domain.Now(),
-	}, nil
+	}
+
+	cleanTranscript := strings.TrimSpace(transcript)
+	if transcriptErr != nil || cleanTranscript == "" {
+		return analysis
+	}
+
+	var summary string
+	if c.llmClient != nil {
+		summary, _ = c.llmClient.SummarizeVideoTranscript(ctx, gameTitle, videoInfo.ChannelName, videoInfo.Title, cleanTranscript)
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = generateFallbackTranscriptSummary(gameTitle, videoInfo.ChannelName, cleanTranscript)
+	}
+	analysis.Summary = summary
+	analysis.Status = domain.YouTubeStatusAnalyzed
+	return analysis
 }
 
 func generateFallbackTranscriptSummary(gameTitle, channelName, transcript string) string {
 	clean := strings.TrimSpace(transcript)
-	if len(clean) > 300 {
-		clean = clean[:300] + "..."
+	if r := []rune(clean); len(r) > 300 {
+		clean = string(r[:300]) + "..."
 	}
 	if channelName != "" {
 		return fmt.Sprintf("Блогер (%s) проходит игру %s и комментирует происходящее: «%s».", channelName, gameTitle, clean)

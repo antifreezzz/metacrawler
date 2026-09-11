@@ -451,8 +451,8 @@ func (c *Client) SummarizeVideoTranscriptWithLimit(ctx context.Context, gameTitl
 
 func generateFallbackTranscriptSummary(gameTitle, channelName, transcript string) string {
 	clean := strings.TrimSpace(transcript)
-	if len(clean) > 300 {
-		clean = clean[:300] + "..."
+	if r := []rune(clean); len(r) > 300 {
+		clean = string(r[:300]) + "..."
 	}
 	if channelName != "" {
 		return fmt.Sprintf("Блогер (%s) проходит игру %s и комментирует происходящее: «%s».", channelName, gameTitle, clean)
