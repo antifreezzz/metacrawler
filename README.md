@@ -141,6 +141,18 @@ docker compose up -d
 
 ---
 
+## 🚢 Релизы и деплой
+
+Образы тегируются по ревизии: `make release` соберет `metacrawler:$(git rev-parse --short HEAD)`.
+`docker-compose.yml` использует `${IMAGE}` (по умолчанию `metacrawler:latest`), что позволяет
+деплоить и откатывать конкретные теги.
+
+`deploy.sh` (из `deploy.example.sh`) делает health-gated деплой: собирает тег, поднимает
+контейнер, ждет `/healthz` и при неудаче автоматически откатывается на предыдущий образ
+(`.last_deploy`).
+
+---
+
 ## 🌿 Рабочий процесс (ветки и Pull Request)
 
 Прямой пуш в `main` запрещён. Каждая единица работы ведётся в feature-ветке, по завершении открывается Pull Request:

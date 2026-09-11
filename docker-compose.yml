@@ -1,5 +1,6 @@
 services:
   metacrawler:
+    image: ${IMAGE:-metacrawler:latest}
     build:
       context: .
       dockerfile: Dockerfile

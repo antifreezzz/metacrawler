@@ -1,4 +1,6 @@
-.PHONY: all build test run probe probe-transcript docker-build docker-up deploy clean
+.PHONY: all build test run probe probe-transcript docker-build release docker-up deploy clean
+
+VERSION ?= $(shell git rev-parse --short HEAD)
 
 all: test build
 
@@ -19,6 +21,10 @@ probe-transcript:
 
 docker-build:
 	docker build -t metacrawler:latest .
+
+release:
+	docker build --build-arg VERSION=$(VERSION) -t metacrawler:$(VERSION) .
+	@echo "Built metacrawler:$(VERSION)"
 
 docker-up:
 	docker compose up -d
