@@ -299,6 +299,37 @@ func TestWorker_PartialWriteDoesNotMarkProcessed(t *testing.T) {
 	require.False(t, processed, "при сбое стадии игра не должна помечаться обработанной")
 }
 
+// TestWorker_BackfillMissingSummaries_AllGames: бэкфилл обходит все игры,
+// а не только первые (ранее был молчаливый лимит 1000).
+func TestWorker_BackfillMissingSummaries_AllGames(t *testing.T) {
+	db, _, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		slug := fmt.Sprintf("bf-%d", i)
+		game := &domain.Game{Slug: slug, Title: "BF " + slug, Platforms: []domain.GamePlatform{{Platform: "pc"}}}
+		require.NoError(t, db.UpsertGame(ctx, game))
+		saved, err := db.GetGameBySlug(ctx, slug)
+		require.NoError(t, err)
+		_, err = db.SaveReviews(ctx, []domain.Review{{
+			GamePlatformID: saved.Platforms[0].ID,
+			ReviewType:     domain.ReviewTypeCritic,
+			Author:         "A",
+			Text:           "text",
+			ContentHash:    "hash-" + slug,
+		}})
+		require.NoError(t, err)
+	}
+
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&llm.SummaryResult{CriticPros: "p"}, nil)
+
+	count, err := mgr.BackfillMissingSummaries(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+}
+
 func TestWorker_DayRolloverReset(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()

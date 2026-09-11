@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"metacrawler/internal/config"
@@ -29,6 +30,7 @@ type Server struct {
 	auth               *AuthManager
 	loginLimiter       *loginLimiter
 	metrics            *httpMetrics
+	embCache           embeddingsCache
 	router             *http.ServeMux
 	handler            http.Handler
 	indexTemplate      *template.Template
@@ -36,6 +38,32 @@ type Server struct {
 	listTemplate       *template.Template
 	monitoringTemplate *template.Template
 	loginTemplate      *template.Template
+}
+
+// embeddingsCache кэширует все векторы, чтобы не сканировать таблицу
+// эмбеддингов на каждый просмотр карточки.
+type embeddingsCache struct {
+	mu      sync.Mutex
+	data    []domain.GameEmbedding
+	expires time.Time
+}
+
+const embeddingsCacheTTL = 2 * time.Minute
+
+func (s *Server) cachedEmbeddings(ctx context.Context) []domain.GameEmbedding {
+	s.embCache.mu.Lock()
+	defer s.embCache.mu.Unlock()
+
+	if s.embCache.data != nil && time.Now().Before(s.embCache.expires) {
+		return s.embCache.data
+	}
+	all, err := s.db.GetAllEmbeddings(ctx)
+	if err != nil {
+		return s.embCache.data
+	}
+	s.embCache.data = all
+	s.embCache.expires = time.Now().Add(embeddingsCacheTTL)
+	return all
 }
 
 func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *config.Config) *Server {
@@ -704,9 +732,9 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 	// Подтягиваем YouTube анализ летсплея
 	ytAnalysis, _ := s.db.GetYouTubeAnalysis(ctx, game.ID)
 
-	// Подбор похожих игр на основе эмбеддингов
+	// Подбор похожих игр на основе эмбеддингов (векторы кэшируются)
 	var similarGames []domain.Game
-	allEmbeddings, _ := s.db.GetAllEmbeddings(ctx)
+	allEmbeddings := s.cachedEmbeddings(ctx)
 	var targetVec []float32
 	for _, emb := range allEmbeddings {
 		if emb.GameID == game.ID {

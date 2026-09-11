@@ -571,41 +571,58 @@ func (m *Manager) RecrawlStatus(slug string) (RecrawlState, bool) {
 
 // BackfillMissingSummaries обходит игры в базе данных и догенерирует резюме для платформ, у которых есть отзывы, но нет резюме.
 func (m *Manager) BackfillMissingSummaries(ctx context.Context) (int, error) {
-	games, err := m.db.ListGames(ctx, storage.ListFilter{Limit: 1000})
-	if err != nil {
-		return 0, err
-	}
+	const pageSize = 200
 	count := 0
-	for _, g := range games {
-		for _, p := range g.Platforms {
-			existing, _ := m.db.GetPlatformSummary(ctx, p.ID)
-			if existing != nil {
-				continue
-			}
-			reviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
-			if len(reviews) == 0 {
-				continue
-			}
-			var critics, users []domain.Review
-			for _, r := range reviews {
-				if r.ReviewType == domain.ReviewTypeCritic {
-					critics = append(critics, r)
-				} else {
-					users = append(users, r)
+	for offset := 0; ; offset += pageSize {
+		if ctx.Err() != nil {
+			return count, ctx.Err()
+		}
+		games, err := m.db.ListGames(ctx, storage.ListFilter{Limit: pageSize, Offset: offset})
+		if err != nil {
+			return count, err
+		}
+		if len(games) == 0 {
+			break
+		}
+
+		for _, g := range games {
+			for _, p := range g.Platforms {
+				existing, _ := m.db.GetPlatformSummary(ctx, p.ID)
+				if existing != nil {
+					continue
+				}
+				reviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
+				if len(reviews) == 0 {
+					continue
+				}
+				var critics, users []domain.Review
+				for _, r := range reviews {
+					if r.ReviewType == domain.ReviewTypeCritic {
+						critics = append(critics, r)
+					} else {
+						users = append(users, r)
+					}
+				}
+				summary, llmErr := m.llm.SummarizeReviews(ctx, g.Title, p.Platform, critics, users)
+				if llmErr == nil && summary != nil {
+					if saveErr := m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+						GamePlatformID: p.ID,
+						CriticPros:     summary.CriticPros,
+						CriticCons:     summary.CriticCons,
+						UserPros:       summary.UserPros,
+						UserCons:       summary.UserCons,
+					}); saveErr != nil {
+						m.addLog(fmt.Sprintf("  ⚠️ [Backfill] Ошибка сохранения резюме \"%s\" (%s): %v", g.Title, p.Platform, saveErr))
+						continue
+					}
+					count++
+					m.addLog(fmt.Sprintf("  🤖 [Backfill] Добавлено резюме для \"%s\" (%s)", g.Title, p.Platform))
 				}
 			}
-			summary, llmErr := m.llm.SummarizeReviews(ctx, g.Title, p.Platform, critics, users)
-			if llmErr == nil && summary != nil {
-				_ = m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
-					GamePlatformID: p.ID,
-					CriticPros:     summary.CriticPros,
-					CriticCons:     summary.CriticCons,
-					UserPros:       summary.UserPros,
-					UserCons:       summary.UserCons,
-				})
-				count++
-				m.addLog(fmt.Sprintf("  🤖 [Backfill] Добавлено резюме для \"%s\" (%s)", g.Title, p.Platform))
-			}
+		}
+
+		if len(games) < pageSize {
+			break
 		}
 	}
 	return count, nil
