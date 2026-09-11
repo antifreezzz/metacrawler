@@ -698,3 +698,45 @@ func TestGameDetailHandler_IsReadOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, summary, "GET карточки не должен писать резюме в БД")
 }
+
+func TestRequestIDAndMetrics(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.NotEmpty(t, rec.Header().Get("X-Request-ID"))
+
+	reqID := "test-correlation-id"
+	req2 := httptest.NewRequest("GET", "/healthz", nil)
+	req2.Header.Set("X-Request-ID", reqID)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, reqID, rec2.Header().Get("X-Request-ID"))
+
+	mreq := httptest.NewRequest("GET", "/metrics", nil)
+	mrec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(mrec, mreq)
+	require.Equal(t, http.StatusOK, mrec.Code)
+	require.Contains(t, mrec.Body.String(), "metacrawler_http_requests_total")
+	require.Contains(t, mrec.Body.String(), `method="GET"`)
+	require.Contains(t, mrec.Body.String(), "metacrawler_worker_running")
+}
+
+func TestReadyz(t *testing.T) {
+	srv, db := setupServer(t)
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "ready")
+
+	require.NoError(t, db.Close())
+
+	req2 := httptest.NewRequest("GET", "/readyz", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusServiceUnavailable, rec2.Code)
+}

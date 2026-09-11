@@ -66,6 +66,11 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
+// Ping проверяет доступность БД (для readiness-проверки).
+func (d *DB) Ping(ctx context.Context) error {
+	return d.db.PingContext(ctx)
+}
+
 // migration - версионированная миграция схемы. Каждая применяется ровно один
 // раз и фиксируется в таблице schema_migrations в той же транзакции.
 type migration struct {

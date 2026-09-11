@@ -28,6 +28,7 @@ type Server struct {
 	cfg                *config.Config
 	auth               *AuthManager
 	loginLimiter       *loginLimiter
+	metrics            *httpMetrics
 	router             *http.ServeMux
 	handler            http.Handler
 	indexTemplate      *template.Template
@@ -45,12 +46,13 @@ func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *
 		cfg:          cfg,
 		auth:         NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret, cfg.CookieSecure),
 		loginLimiter: newLoginLimiter(5, time.Minute),
+		metrics:      newHTTPMetrics(),
 		router:       http.NewServeMux(),
 	}
 
 	s.loadTemplates()
 	s.routes()
-	s.handler = s.securityMiddleware(s.router)
+	s.handler = s.requestIDMiddleware(s.loggingMiddleware(s.securityMiddleware(s.router)))
 	return s
 }
 
@@ -85,6 +87,20 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 
 func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// handleReadyz - readiness-проверка: сервис готов, если доступна БД.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := s.db.Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"not ready"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 func isStateChanging(method string) bool {
@@ -235,6 +251,8 @@ func (s *Server) routes() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	s.router.HandleFunc("GET /readyz", s.handleReadyz)
+	s.router.HandleFunc("GET /metrics", s.handleMetrics)
 	s.router.HandleFunc("GET /", s.handleIndex)
 	s.router.HandleFunc("GET /login", s.handleLoginPage)
 	s.router.HandleFunc("POST /login", s.handleLoginSubmit)
