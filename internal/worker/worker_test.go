@@ -216,6 +216,50 @@ func TestWorker_ConcurrentRunsRejected(t *testing.T) {
 	require.False(t, mgr.IsRunning())
 }
 
+// TestWorker_PageNotAdvancedOnProcessingError: при ошибке обработки игры
+// курсор страницы не продвигается, чтобы пакет был перечитан.
+func TestWorker_PageNotAdvancedOnProcessingError(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+	_ = db.SetState(ctx, "last_crawl_date", today)
+	_ = db.SetState(ctx, "current_page", "3")
+
+	scraperMock.On("FetchBrowsePage", mock.Anything, 3).Return([]string{"bad-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "bad-game").
+		Return((*domain.Game)(nil), []domain.Review(nil), fmt.Errorf("boom")).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	page, _ := db.GetState(ctx, "current_page")
+	require.Equal(t, "3", page, "курсор не должен продвигаться при ошибке обработки")
+}
+
+// TestWorker_NewReleasesCursorNotAdvancedOnError: сбой в первом запуске суток
+// не фиксирует дату, поэтому пакет будет перечитан.
+func TestWorker_NewReleasesCursorNotAdvancedOnError(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"bad-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "bad-game").
+		Return((*domain.Game)(nil), []domain.Review(nil), fmt.Errorf("boom")).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	lastDate, _ := db.GetState(ctx, "last_crawl_date")
+	require.NotEqual(t, today, lastDate, "дата не должна фиксироваться при сбое обработки")
+}
+
 func TestWorker_DayRolloverReset(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()

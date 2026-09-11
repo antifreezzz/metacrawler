@@ -350,15 +350,16 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	today := domain.Now().Format("2006-01-02")
 	lastCrawlDate, _ := m.db.GetState(ctx, "last_crawl_date")
 
-	var candidateSlugs []string
-	var err error
-
 	useNewReleases := false
 	if mode == RunModeNewReleases {
 		useNewReleases = true
 	} else if mode == RunModeAuto && lastCrawlDate != today {
 		useNewReleases = true
 	}
+
+	targetPage := 1
+	var candidateSlugs []string
+	var err error
 
 	if useNewReleases {
 		m.setRunning("Запрос свежих релизов (New Releases)", 0)
@@ -369,10 +370,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			return 0, err
 		}
 		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр из раздела New Releases: %d", len(candidateSlugs)))
-		_ = m.db.SetState(ctx, "last_crawl_date", today)
-		_ = m.db.SetState(ctx, "current_page", "1")
 	} else {
-		targetPage := 1
 		if mode == RunModeCustomPage && customPage > 0 {
 			targetPage = customPage
 		} else {
@@ -390,11 +388,30 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			return 0, err
 		}
 		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр со страницы %d: %d", targetPage, len(candidateSlugs)))
-		// Переход к следующей странице
-		_ = m.db.SetState(ctx, "current_page", strconv.Itoa(targetPage+1))
 	}
 
-	// Отбираем только игры, которые сегодня ЕЩЕ НЕ обрабатывались (СТРОГО БЕЗ ДОБОРА со следующих страниц)
+	// Курсор продвигается только после успешной обработки пакета. При падении
+	// или ошибке та же страница будет перечитана, а повтор идемпотентен
+	// (обработанные игры пропускаются, отзывы дедуплицируются).
+	advanceCursor := func() {
+		stateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if useNewReleases {
+			if setErr := m.db.SetState(stateCtx, "last_crawl_date", today); setErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить last_crawl_date: %v", setErr))
+			}
+			if setErr := m.db.SetState(stateCtx, "current_page", "1"); setErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить current_page: %v", setErr))
+			}
+			return
+		}
+		if setErr := m.db.SetState(stateCtx, "current_page", strconv.Itoa(targetPage+1)); setErr != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить current_page: %v", setErr))
+		}
+	}
+
+	// Отбираем только игры, которые сегодня ЕЩЁ НЕ обрабатывались
+	// (без добора со следующих страниц).
 	var toProcess []string
 	for _, slug := range candidateSlugs {
 		processedToday, checkErr := m.db.IsProcessedOnDate(ctx, slug, today)
@@ -408,6 +425,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 
 	if len(toProcess) == 0 {
 		m.addLog("ℹ️ [Info] Все игры из этого списка уже собраны за сегодняшнюю дату. Переход в режим ожидания.")
+		advanceCursor()
 		m.setFinished(0, nil)
 		return 0, nil
 	}
@@ -415,8 +433,10 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	m.setRunning(fmt.Sprintf("Processing %d games", len(toProcess)), len(toProcess))
 
 	processedCount := 0
+	failed := 0
 	for idx, slug := range toProcess {
 		if ctx.Err() != nil {
+			m.addLog("  ⏸️ [Worker] Контекст отменён, курсор не продвигается")
 			m.setFinished(processedCount, ctx.Err())
 			return processedCount, ctx.Err()
 		}
@@ -431,15 +451,27 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			m.addLog(fmt.Sprintf("  ⏭️ [Worker] Игра %s уже обрабатывается в фоне, пропуск", slug))
 			continue
 		}
-		_, err := m.processGame(ctx, slug, today, AllRecrawlOptions(), false)
+		_, gameErr := m.processGame(ctx, slug, today, AllRecrawlOptions(), false)
 		m.endGame(slug)
-		if err != nil {
-			m.addLog(fmt.Sprintf("  ⚠️ [Worker] Ошибка обработки игры %s: %v (пропуск)", slug, err))
+		if gameErr != nil {
+			failed++
+			m.addLog(fmt.Sprintf("  ⚠️ [Worker] Ошибка обработки игры %s: %v", slug, gameErr))
 			continue
 		}
 		processedCount++
 	}
 
+	if ctx.Err() != nil {
+		m.setFinished(processedCount, ctx.Err())
+		return processedCount, ctx.Err()
+	}
+	if failed > 0 {
+		m.addLog(fmt.Sprintf("  ⚠️ [State] Пакет обработан не полностью (ошибок: %d), страница будет перечитана", failed))
+		m.setFinished(processedCount, nil)
+		return processedCount, nil
+	}
+
+	advanceCursor()
 	m.setFinished(processedCount, nil)
 	return processedCount, nil
 }
