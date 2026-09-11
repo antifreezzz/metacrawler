@@ -47,7 +47,7 @@ func TestParseGameDetails(t *testing.T) {
 	require.NotEmpty(t, game.VideoURL)
 	require.Equal(t, "2022-02-25", game.ReleaseDate)
 
-	// Проверка платформ
+	// Проверка платформ: парсер не назначает userscore одной платформы всем.
 	require.NotEmpty(t, game.Platforms)
 	var hasPC, hasPS5, hasXbox bool
 	for _, p := range game.Platforms {
@@ -56,21 +56,16 @@ func TestParseGameDetails(t *testing.T) {
 			hasPC = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 94, *p.Metascore)
-			require.NotNil(t, p.Userscore)
-			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		case "playstation-5":
 			hasPS5 = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 96, *p.Metascore)
-			require.NotNil(t, p.Userscore)
-			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		case "xbox-series-x":
 			hasXbox = true
 			require.NotNil(t, p.Metascore)
 			require.Equal(t, 96, *p.Metascore)
-			require.NotNil(t, p.Userscore)
-			require.InDelta(t, 8.4, *p.Userscore, 0.01)
 		}
+		require.Nil(t, p.Userscore, "userscore должен заполняться в контексте конкретной платформы, а не копироваться со страницы")
 	}
 	require.True(t, hasPC, "should have PC platform")
 	require.True(t, hasPS5, "should have PS5 platform")
@@ -146,6 +141,24 @@ func TestParseGameDetails_ReviewPlatform(t *testing.T) {
 	for _, r := range reviews {
 		require.Equal(t, "playstation-5", r.Platform, "review platform should be extracted from card")
 	}
+}
+
+func TestParseUserScore(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/game_user_reviews.html")
+	require.NoError(t, err)
+
+	score := scraper.ParseUserScore(data)
+	require.NotNil(t, score)
+	require.InDelta(t, 8.4, *score, 0.01)
+}
+
+func TestParseUserScore_TBD(t *testing.T) {
+	data := []byte(`<div class="product-reviews-score" data-testid="score-card-overview"><div class="c-siteReviewScore" title="User score tbd out of 10" aria-label="User score tbd out of 10"><span>tbd</span></div></div>`)
+	require.Nil(t, scraper.ParseUserScore(data))
+}
+
+func TestParseUserScore_Empty(t *testing.T) {
+	require.Nil(t, scraper.ParseUserScore([]byte(`<html><body><p>no scores here</p></body></html>`)))
 }
 
 func TestParseGameDetails_UnescapesHTMLEntities(t *testing.T) {

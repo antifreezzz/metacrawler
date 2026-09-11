@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -120,12 +121,50 @@ func (c *Client) FetchGameDetails(ctx context.Context, slug string) (*domain.Gam
 		return nil, nil, err
 	}
 
+	// Userscore принадлежит конкретной платформе: тянем его со страницы
+	// user-reviews этой платформы, а не копируем значение главной страницы.
+	for i := range game.Platforms {
+		if game.Platforms[i].Platform == "" {
+			continue
+		}
+		if score, scoreErr := c.FetchPlatformUserScore(ctx, slug, game.Platforms[i].Platform); scoreErr == nil && score != nil {
+			game.Platforms[i].Userscore = score
+		}
+	}
+
 	// Полные списки отзывов живут на подстраницах /critic-reviews/ и /user-reviews/.
 	// Главная страница содержит лишь несколько карточек-цитат.
 	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "critic-reviews", domain.ReviewTypeCritic)...)
 	reviews = append(reviews, c.fetchReviewSubpage(ctx, slug, "user-reviews", domain.ReviewTypeUser)...)
 
 	return game, reviews, nil
+}
+
+// FetchPlatformUserScore получает userscore одной платформы с её страницы
+// /game/{slug}/user-reviews/?platform={platform}. Ошибка или "tbd" означает
+// отсутствие честных данных, а не повод выдумать значение.
+func (c *Client) FetchPlatformUserScore(ctx context.Context, slug, platform string) (*float64, error) {
+	if platform == "" {
+		return nil, fmt.Errorf("empty platform")
+	}
+	if c.interRequestDelay > 0 {
+		select {
+		case <-time.After(c.interRequestDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	targetURL := fmt.Sprintf("%s/game/%s/user-reviews/?platform=%s", c.baseURL, slug, url.QueryEscape(platform))
+	body, err := c.get(ctx, targetURL)
+	if err != nil {
+		return nil, err
+	}
+	score := ParseUserScore(body)
+	if score == nil {
+		return nil, fmt.Errorf("no user score for platform %q", platform)
+	}
+	return score, nil
 }
 
 // fetchReviewSubpage загружает и парсит одну подстраницу отзывов.
