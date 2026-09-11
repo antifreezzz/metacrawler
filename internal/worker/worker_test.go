@@ -140,7 +140,7 @@ func TestWorker_FirstRunOfDay_NewReleases(t *testing.T) {
 
 	nextPage, err := db.GetState(ctx, "current_page")
 	require.NoError(t, err)
-	require.Equal(t, "1", nextPage)
+	require.Empty(t, nextPage, "New Releases не трогает курсор обхода каталога")
 
 	// Проверяем, что обе игры помечены как обработанные сегодня
 	p1, _ := db.IsProcessedOnDate(ctx, "game-1", today)
@@ -336,12 +336,14 @@ func TestWorker_DayRolloverReset(t *testing.T) {
 
 	ctx := context.Background()
 	yesterday := domain.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	today := domain.Now().Format("2006-01-02")
 
-	// Вчера были на странице 10
+	// Вчера остановились на странице 10
 	_ = db.SetState(ctx, "last_crawl_date", yesterday)
 	_ = db.SetState(ctx, "current_page", "10")
 
-	// Сегодня новый день -> должен сброситься на New Releases!
+	// Новый день: первый запуск добавляет New Releases, но НЕ сбрасывает
+	// курсор обхода каталога (актуализация идет циклически).
 	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"new-game-today"}, nil).Once()
 
 	g, r := sampleGame("new-game-today")
@@ -355,10 +357,35 @@ func TestWorker_DayRolloverReset(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, processed)
 
-	// Страница сбросилась на 1 для последующих вызовов
+	date, err := db.GetState(ctx, "last_crawl_date")
+	require.NoError(t, err)
+	require.Equal(t, today, date)
+
 	page, err := db.GetState(ctx, "current_page")
 	require.NoError(t, err)
-	require.Equal(t, "1", page)
+	require.Equal(t, "10", page, "курсор каталога сохраняется между днями")
+}
+
+// TestWorker_CatalogWrapsAtEnd: пустая страница означает конец каталога,
+// курсор возвращается на страницу 1.
+func TestWorker_CatalogWrapsAtEnd(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+	_ = db.SetState(ctx, "last_crawl_date", today)
+	_ = db.SetState(ctx, "current_page", "42")
+
+	scraperMock.On("FetchBrowsePage", mock.Anything, 42).Return([]string{}, nil).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	page, err := db.GetState(ctx, "current_page")
+	require.NoError(t, err)
+	require.Equal(t, "1", page, "после конца каталога курсор уходит на 1")
 }
 
 func TestWorker_ForcedModes(t *testing.T) {

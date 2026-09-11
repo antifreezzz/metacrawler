@@ -358,6 +358,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	}
 
 	targetPage := 1
+	wrap := false
 	var candidateSlugs []string
 	var err error
 
@@ -388,24 +389,36 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			return 0, err
 		}
 		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр со страницы %d: %d", targetPage, len(candidateSlugs)))
+		if len(candidateSlugs) == 0 {
+			m.addLog("🏁 [Catalog] Конец каталога, курсор вернется на страницу 1")
+			wrap = true
+		}
 	}
 
 	// Курсор продвигается только после успешной обработки пакета. При падении
 	// или ошибке та же страница будет перечитана, а повтор идемпотентен
-	// (обработанные игры пропускаются, отзывы дедуплицируются).
+	// (обработанные игры пропускаются, отзывы дедуплицируются). Каталог
+	// обходится циклически, поэтому курсор сохраняется между днями и
+	// сбрасывается на 1 только при достижении конца каталога.
 	advanceCursor := func() {
 		stateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if useNewReleases {
+			// Первый запуск суток добавляет свежие релизы, не сбрасывая
+			// накопленный курсор обхода каталога.
 			if setErr := m.db.SetState(stateCtx, "last_crawl_date", today); setErr != nil {
 				m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить last_crawl_date: %v", setErr))
 			}
-			if setErr := m.db.SetState(stateCtx, "current_page", "1"); setErr != nil {
-				m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить current_page: %v", setErr))
-			}
 			return
 		}
-		if setErr := m.db.SetState(stateCtx, "current_page", strconv.Itoa(targetPage+1)); setErr != nil {
+		if mode == RunModeCustomPage {
+			return
+		}
+		nextPage := targetPage + 1
+		if wrap {
+			nextPage = 1
+		}
+		if setErr := m.db.SetState(stateCtx, "current_page", strconv.Itoa(nextPage)); setErr != nil {
 			m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить current_page: %v", setErr))
 		}
 	}
