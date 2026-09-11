@@ -189,6 +189,46 @@ func TestLoginThrottle_BlocksAfterFailures(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, attempt())
 }
 
+func TestSecurityHeaders_Present(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	require.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
+	require.NotEmpty(t, rec.Header().Get("Referrer-Policy"))
+	require.Empty(t, rec.Header().Get("Strict-Transport-Security"), "HSTS только по HTTPS")
+}
+
+func TestSecurityHeaders_HSTSOnHTTPS(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.NotEmpty(t, rec.Header().Get("Strict-Transport-Security"))
+}
+
+func TestLogin_BodyLimit(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	big := strings.Repeat("a", (1<<20)+100)
+	form := "username=admin&password=" + big
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestSessionCookie_HasSecureFlag(t *testing.T) {
 	db, err := storage.New(":memory:")
 	require.NoError(t, err)

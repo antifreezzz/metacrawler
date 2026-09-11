@@ -59,17 +59,32 @@ func (s *Server) Router() http.Handler {
 	return s.handler
 }
 
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // securityMiddleware блокирует cross-origin state-changing запросы. Браузер
 // всегда шлет Origin на межсайтовый POST/fetch, поэтому проверка Origin/Referer
 // закрывает CSRF; запросы без Origin (curl, Basic Auth) пропускаются.
+// Также выставляет базовые security-заголовки и ограничивает размер тела.
 func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		if requestIsHTTPS(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
 		if isStateChanging(r.Method) && !sameOrigin(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func isStateChanging(method string) bool {
@@ -413,7 +428,10 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid login form", http.StatusBadRequest)
+		return
+	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	next := sanitizeRedirectURL(r.FormValue("next"))
@@ -721,7 +739,10 @@ func (s *Server) handleMonitoring(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkerRun(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	modeParam := r.URL.Query().Get("mode")
 	pageParam := r.URL.Query().Get("page")
 	if pageParam == "" {
@@ -771,6 +792,9 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	// SSE - долгоживущий поток: снимаем общий WriteTimeout сервера для него.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

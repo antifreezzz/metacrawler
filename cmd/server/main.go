@@ -75,8 +75,13 @@ func main() {
 	srv := server.New(db, workerMgr, llmClient, cfg)
 
 	httpServer := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: srv.Router(),
+		Addr:              ":" + cfg.Port,
+		Handler:           srv.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Graceful shutdown
