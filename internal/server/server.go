@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,7 +27,9 @@ type Server struct {
 	llmClient          *llm.Client
 	cfg                *config.Config
 	auth               *AuthManager
+	loginLimiter       *loginLimiter
 	router             *http.ServeMux
+	handler            http.Handler
 	indexTemplate      *template.Template
 	detailTemplate     *template.Template
 	listTemplate       *template.Template
@@ -36,21 +39,61 @@ type Server struct {
 
 func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *config.Config) *Server {
 	s := &Server{
-		db:        db,
-		workerMgr: workerMgr,
-		llmClient: llmClient,
-		cfg:       cfg,
-		auth:      NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret),
-		router:    http.NewServeMux(),
+		db:           db,
+		workerMgr:    workerMgr,
+		llmClient:    llmClient,
+		cfg:          cfg,
+		auth:         NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret, cfg.CookieSecure),
+		loginLimiter: newLoginLimiter(5, time.Minute),
+		router:       http.NewServeMux(),
 	}
 
 	s.loadTemplates()
 	s.routes()
+	s.handler = s.securityMiddleware(s.router)
 	return s
 }
 
-func (s *Server) Router() *http.ServeMux {
-	return s.router
+// Router возвращает обработчик со всеми middleware (защита от cross-origin POST и т.п.).
+func (s *Server) Router() http.Handler {
+	return s.handler
+}
+
+// securityMiddleware блокирует cross-origin state-changing запросы. Браузер
+// всегда шлет Origin на межсайтовый POST/fetch, поэтому проверка Origin/Referer
+// закрывает CSRF; запросы без Origin (curl, Basic Auth) пропускаются.
+func (s *Server) securityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isStateChanging(r.Method) && !sameOrigin(r) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isStateChanging(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Header.Get("Referer")
+	}
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 func (s *Server) loadTemplates() {
@@ -375,7 +418,16 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	next := sanitizeRedirectURL(r.FormValue("next"))
 
+	ip := clientIP(r)
+	if !s.loginLimiter.allowed(ip) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"too many login attempts, try again later"}`))
+		return
+	}
+
 	if !s.auth.Authenticate(username, password) {
+		s.loginLimiter.fail(ip)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		data := LoginPageData{
@@ -387,6 +439,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.loginLimiter.reset(ip)
 	cookie := s.auth.GenerateSessionCookie(username)
 	http.SetCookie(w, cookie)
 	http.Redirect(w, r, next, http.StatusFound)

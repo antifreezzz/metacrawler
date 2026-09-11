@@ -27,6 +27,7 @@ type Config struct {
 	AdminPassword         string
 	SessionSecret         string
 	AllowInsecureDefaults bool // разрешить слабые секреты (только для локальной разработки)
+	CookieSecure          bool // выставлять флаг Secure на cookie сессии (prod: true)
 	WhisperURL            string
 	WhisperBinaryPath     string
 	WhisperModelPath      string
@@ -60,6 +61,7 @@ func Load() *Config {
 		AdminPassword:         getEnv("ADMIN_PASSWORD", ""),
 		SessionSecret:         getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
 		AllowInsecureDefaults: getEnvAsBool("ALLOW_INSECURE_DEFAULTS", false),
+		CookieSecure:          getEnvAsBool("COOKIE_SECURE", true),
 		WhisperURL:            getEnv("WHISPER_URL", ""),
 		WhisperBinaryPath:     getEnv("WHISPER_BINARY_PATH", ""),
 		WhisperModelPath:      getEnv("WHISPER_MODEL_PATH", ""),

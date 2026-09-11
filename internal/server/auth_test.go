@@ -140,3 +140,83 @@ func TestAuth_LoginFlowAndSessionCookie(t *testing.T) {
 	require.NotEmpty(t, logoutCookies)
 	require.True(t, logoutCookies[0].MaxAge < 0 || logoutCookies[0].Expires.Before(logoutCookies[0].Expires.Add(-time.Hour)))
 }
+
+func TestSecurityMiddleware_RejectsCrossOriginPost(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	form := url.Values{"username": {"admin"}, "password": {"supersecret"}}
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestSecurityMiddleware_AllowsSameOriginPost(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	form := url.Values{"username": {"admin"}, "password": {"supersecret"}}
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+req.Host)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusFound, rec.Code)
+}
+
+func TestLoginThrottle_BlocksAfterFailures(t *testing.T) {
+	srv, db := setupAuthServer(t, "supersecret")
+	defer db.Close()
+
+	attempt := func() int {
+		form := url.Values{"username": {"admin"}, "password": {"wrong"}}
+		req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "10.0.0.5:1234"
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 5; i++ {
+		require.Equal(t, http.StatusUnauthorized, attempt(), "attempt %d", i+1)
+	}
+	require.Equal(t, http.StatusTooManyRequests, attempt())
+}
+
+func TestSessionCookie_HasSecureFlag(t *testing.T) {
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		AdminUsername: "admin",
+		AdminPassword: "supersecret",
+		SessionSecret: "test-secret-key-98765",
+		CookieSecure:  true,
+	}
+	llmClient := llm.NewClient("http://mock/v1", "", "gpt-4o-mini", "local")
+	workerMgr := worker.NewManager(db, &mockScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, workerMgr, llmClient, cfg)
+
+	form := url.Values{"username": {"admin"}, "password": {"supersecret"}}
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusFound, rec.Code)
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "metacrawler_session" {
+			sessionCookie = c
+		}
+	}
+	require.NotNil(t, sessionCookie)
+	require.True(t, sessionCookie.Secure, "session cookie must be Secure")
+}

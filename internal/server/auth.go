@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,9 +20,10 @@ type AuthManager struct {
 	username string
 	password string
 	secret   []byte
+	secure   bool
 }
 
-func NewAuthManager(username, password, secret string) *AuthManager {
+func NewAuthManager(username, password, secret string, secure bool) *AuthManager {
 	if secret == "" {
 		secret = "metacrawler-default-secret-key-12345"
 	}
@@ -28,6 +31,7 @@ func NewAuthManager(username, password, secret string) *AuthManager {
 		username: username,
 		password: password,
 		secret:   []byte(secret),
+		secure:   secure,
 	}
 }
 
@@ -61,6 +65,7 @@ func (a *AuthManager) GenerateSessionCookie(username string) *http.Cookie {
 		Path:     "/",
 		Expires:  now.Add(sessionDuration),
 		HttpOnly: true,
+		Secure:   a.secure,
 		SameSite: http.SameSiteLaxMode,
 	}
 }
@@ -74,6 +79,7 @@ func (a *AuthManager) ClearSessionCookie() *http.Cookie {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   a.secure,
 		SameSite: http.SameSiteLaxMode,
 	}
 }
@@ -123,6 +129,63 @@ func (a *AuthManager) sign(data string) string {
 	h := hmac.New(sha256.New, a.secret)
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// loginLimiter ограничивает число неудачных попыток входа с одного адреса.
+type loginLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	max      int
+	window   time.Duration
+}
+
+func newLoginLimiter(max int, window time.Duration) *loginLimiter {
+	return &loginLimiter{
+		attempts: make(map[string][]time.Time),
+		max:      max,
+		window:   window,
+	}
+}
+
+func (l *loginLimiter) allowed(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	kept := make([]time.Time, 0, len(l.attempts[key]))
+	for _, t := range l.attempts[key] {
+		if now.Sub(t) < l.window {
+			kept = append(kept, t)
+		}
+	}
+	l.attempts[key] = kept
+	return len(kept) < l.max
+}
+
+func (l *loginLimiter) fail(key string) {
+	l.mu.Lock()
+	l.attempts[key] = append(l.attempts[key], time.Now())
+	l.mu.Unlock()
+}
+
+func (l *loginLimiter) reset(key string) {
+	l.mu.Lock()
+	delete(l.attempts, key)
+	l.mu.Unlock()
+}
+
+// clientIP достает адрес клиента с учетом обратного прокси.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // RequireAuth middleware защищает маршрут от неавторизованного доступа.
