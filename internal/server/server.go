@@ -651,36 +651,17 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Подтягиваем резюме и историю оценок для каждой платформы
+	// Подтягиваем резюме и историю оценок для каждой платформы.
+	// GET строго read-only: недостающие резюме догенерирует воркер/бэкфилл,
+	// а не публичный просмотр карточки.
 	for i := range game.Platforms {
-		summary, _ := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID)
-		reviews, _ := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
-		game.Platforms[i].Reviews = reviews
+		reviews, err := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
+		if err == nil {
+			game.Platforms[i].Reviews = reviews
+		}
 		game.Platforms[i].ScoreHistory, _ = s.db.GetScoreHistory(ctx, game.Platforms[i].ID)
-		if summary != nil {
+		if summary, sumErr := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID); sumErr == nil && summary != nil {
 			game.Platforms[i].Summary = summary
-		} else if len(reviews) > 0 {
-			// На лету генерируем резюме отзывов (с фоллбэком)
-			var critics, users []domain.Review
-			for _, r := range reviews {
-				if r.ReviewType == domain.ReviewTypeCritic {
-					critics = append(critics, r)
-				} else {
-					users = append(users, r)
-				}
-			}
-			sumRes, llmErr := s.llmClient.SummarizeReviews(ctx, game.Title, game.Platforms[i].Platform, critics, users)
-			if llmErr == nil && sumRes != nil {
-				newSum := &domain.PlatformSummary{
-					GamePlatformID: game.Platforms[i].ID,
-					CriticPros:     sumRes.CriticPros,
-					CriticCons:     sumRes.CriticCons,
-					UserPros:       sumRes.UserPros,
-					UserCons:       sumRes.UserCons,
-				}
-				_ = s.db.UpsertPlatformSummary(ctx, newSum)
-				game.Platforms[i].Summary = newSum
-			}
 		}
 	}
 

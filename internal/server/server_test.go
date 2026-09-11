@@ -647,3 +647,54 @@ func TestLogin_OpenRedirectPrevention(t *testing.T) {
 	require.Equal(t, http.StatusFound, recValid.Code)
 	require.Equal(t, "/games/elden-ring", recValid.Header().Get("Location"))
 }
+
+// TestGameDetailHandler_IsReadOnly: публичный GET карточки не должен обращаться
+// к LLM и писать резюме в БД (это делает воркер/бэкфилл).
+func TestGameDetailHandler_IsReadOnly(t *testing.T) {
+	var llmHits int
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmHits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer llmSrv.Close()
+
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{}
+	llmClient := llm.NewClient(llmSrv.URL, "test-key", "gpt-4o-mini", "local")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	ctx := context.Background()
+	game := &domain.Game{
+		Slug:      "detail-game",
+		Title:     "Detail Game",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "detail-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+	_, err = db.SaveReviews(ctx, []domain.Review{{
+		GamePlatformID: platID,
+		ReviewType:     domain.ReviewTypeCritic,
+		Author:         "Critic",
+		Text:           "Solid game.",
+		ContentHash:    "hash-detail",
+	}})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/games/detail-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, llmHits, "GET карточки не должен обращаться к LLM")
+
+	summary, err := db.GetPlatformSummary(ctx, platID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "GET карточки не должен писать резюме в БД")
+}
