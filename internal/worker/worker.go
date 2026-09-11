@@ -279,6 +279,25 @@ func (m *Manager) GetStatus() StatusInfo {
 	}
 }
 
+// tryAcquireRun атомарно занимает глобальный слот выполнения цикла.
+// Возвращает false, если цикл уже выполняется (защита от гонки cron/manual).
+func (m *Manager) tryAcquireRun() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.status == "Running" {
+		return false
+	}
+	m.status = "Running"
+	return true
+}
+
+// IsRunning сообщает, выполняется ли цикл сбора прямо сейчас.
+func (m *Manager) IsRunning() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status == "Running"
+}
+
 func (m *Manager) setRunning(task string, total int) {
 	m.mu.Lock()
 	m.status = "Running"
@@ -324,18 +343,12 @@ func (m *Manager) ExecuteCycle(ctx context.Context) (int, error) {
 
 // ExecuteMode выполняет цикл в указанном режиме (авто суточный, принудительный new_releases, следующая страница или кастомная страница).
 func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int) (int, error) {
-	m.mu.Lock()
-	if m.status == "Running" {
-		m.mu.Unlock()
+	if !m.tryAcquireRun() {
 		return 0, fmt.Errorf("worker is already running")
 	}
-	m.mu.Unlock()
 
 	today := domain.Now().Format("2006-01-02")
 	lastCrawlDate, _ := m.db.GetState(ctx, "last_crawl_date")
-
-	var candidateSlugs []string
-	var err error
 
 	useNewReleases := false
 	if mode == RunModeNewReleases {
@@ -343,6 +356,11 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	} else if mode == RunModeAuto && lastCrawlDate != today {
 		useNewReleases = true
 	}
+
+	targetPage := 1
+	wrap := false
+	var candidateSlugs []string
+	var err error
 
 	if useNewReleases {
 		m.setRunning("Запрос свежих релизов (New Releases)", 0)
@@ -353,10 +371,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			return 0, err
 		}
 		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр из раздела New Releases: %d", len(candidateSlugs)))
-		_ = m.db.SetState(ctx, "last_crawl_date", today)
-		_ = m.db.SetState(ctx, "current_page", "1")
 	} else {
-		targetPage := 1
 		if mode == RunModeCustomPage && customPage > 0 {
 			targetPage = customPage
 		} else {
@@ -374,11 +389,42 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			return 0, err
 		}
 		m.addLog(fmt.Sprintf("📋 [Scraper] Получено игр со страницы %d: %d", targetPage, len(candidateSlugs)))
-		// Переход к следующей странице
-		_ = m.db.SetState(ctx, "current_page", strconv.Itoa(targetPage+1))
+		if len(candidateSlugs) == 0 {
+			m.addLog("🏁 [Catalog] Конец каталога, курсор вернется на страницу 1")
+			wrap = true
+		}
 	}
 
-	// Отбираем только игры, которые сегодня ЕЩЕ НЕ обрабатывались (СТРОГО БЕЗ ДОБОРА со следующих страниц)
+	// Курсор продвигается только после успешной обработки пакета. При падении
+	// или ошибке та же страница будет перечитана, а повтор идемпотентен
+	// (обработанные игры пропускаются, отзывы дедуплицируются). Каталог
+	// обходится циклически, поэтому курсор сохраняется между днями и
+	// сбрасывается на 1 только при достижении конца каталога.
+	advanceCursor := func() {
+		stateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if useNewReleases {
+			// Первый запуск суток добавляет свежие релизы, не сбрасывая
+			// накопленный курсор обхода каталога.
+			if setErr := m.db.SetState(stateCtx, "last_crawl_date", today); setErr != nil {
+				m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить last_crawl_date: %v", setErr))
+			}
+			return
+		}
+		if mode == RunModeCustomPage {
+			return
+		}
+		nextPage := targetPage + 1
+		if wrap {
+			nextPage = 1
+		}
+		if setErr := m.db.SetState(stateCtx, "current_page", strconv.Itoa(nextPage)); setErr != nil {
+			m.addLog(fmt.Sprintf("  ⚠️ [State] Не удалось сохранить current_page: %v", setErr))
+		}
+	}
+
+	// Отбираем только игры, которые сегодня ЕЩЁ НЕ обрабатывались
+	// (без добора со следующих страниц).
 	var toProcess []string
 	for _, slug := range candidateSlugs {
 		processedToday, checkErr := m.db.IsProcessedOnDate(ctx, slug, today)
@@ -392,6 +438,7 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 
 	if len(toProcess) == 0 {
 		m.addLog("ℹ️ [Info] Все игры из этого списка уже собраны за сегодняшнюю дату. Переход в режим ожидания.")
+		advanceCursor()
 		m.setFinished(0, nil)
 		return 0, nil
 	}
@@ -399,8 +446,10 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 	m.setRunning(fmt.Sprintf("Processing %d games", len(toProcess)), len(toProcess))
 
 	processedCount := 0
+	failed := 0
 	for idx, slug := range toProcess {
 		if ctx.Err() != nil {
+			m.addLog("  ⏸️ [Worker] Контекст отменён, курсор не продвигается")
 			m.setFinished(processedCount, ctx.Err())
 			return processedCount, ctx.Err()
 		}
@@ -415,15 +464,27 @@ func (m *Manager) ExecuteMode(ctx context.Context, mode RunMode, customPage int)
 			m.addLog(fmt.Sprintf("  ⏭️ [Worker] Игра %s уже обрабатывается в фоне, пропуск", slug))
 			continue
 		}
-		_, err := m.processGame(ctx, slug, today, AllRecrawlOptions(), false)
+		_, gameErr := m.processGame(ctx, slug, today, AllRecrawlOptions(), false)
 		m.endGame(slug)
-		if err != nil {
-			m.addLog(fmt.Sprintf("  ⚠️ [Worker] Ошибка обработки игры %s: %v (пропуск)", slug, err))
+		if gameErr != nil {
+			failed++
+			m.addLog(fmt.Sprintf("  ⚠️ [Worker] Ошибка обработки игры %s: %v", slug, gameErr))
 			continue
 		}
 		processedCount++
 	}
 
+	if ctx.Err() != nil {
+		m.setFinished(processedCount, ctx.Err())
+		return processedCount, ctx.Err()
+	}
+	if failed > 0 {
+		m.addLog(fmt.Sprintf("  ⚠️ [State] Пакет обработан не полностью (ошибок: %d), страница будет перечитана", failed))
+		m.setFinished(processedCount, nil)
+		return processedCount, nil
+	}
+
+	advanceCursor()
 	m.setFinished(processedCount, nil)
 	return processedCount, nil
 }
@@ -523,41 +584,58 @@ func (m *Manager) RecrawlStatus(slug string) (RecrawlState, bool) {
 
 // BackfillMissingSummaries обходит игры в базе данных и догенерирует резюме для платформ, у которых есть отзывы, но нет резюме.
 func (m *Manager) BackfillMissingSummaries(ctx context.Context) (int, error) {
-	games, err := m.db.ListGames(ctx, storage.ListFilter{Limit: 1000})
-	if err != nil {
-		return 0, err
-	}
+	const pageSize = 200
 	count := 0
-	for _, g := range games {
-		for _, p := range g.Platforms {
-			existing, _ := m.db.GetPlatformSummary(ctx, p.ID)
-			if existing != nil {
-				continue
-			}
-			reviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
-			if len(reviews) == 0 {
-				continue
-			}
-			var critics, users []domain.Review
-			for _, r := range reviews {
-				if r.ReviewType == domain.ReviewTypeCritic {
-					critics = append(critics, r)
-				} else {
-					users = append(users, r)
+	for offset := 0; ; offset += pageSize {
+		if ctx.Err() != nil {
+			return count, ctx.Err()
+		}
+		games, err := m.db.ListGames(ctx, storage.ListFilter{Limit: pageSize, Offset: offset})
+		if err != nil {
+			return count, err
+		}
+		if len(games) == 0 {
+			break
+		}
+
+		for _, g := range games {
+			for _, p := range g.Platforms {
+				existing, _ := m.db.GetPlatformSummary(ctx, p.ID)
+				if existing != nil {
+					continue
+				}
+				reviews, _ := m.db.GetReviewsByPlatformID(ctx, p.ID)
+				if len(reviews) == 0 {
+					continue
+				}
+				var critics, users []domain.Review
+				for _, r := range reviews {
+					if r.ReviewType == domain.ReviewTypeCritic {
+						critics = append(critics, r)
+					} else {
+						users = append(users, r)
+					}
+				}
+				summary, llmErr := m.llm.SummarizeReviews(ctx, g.Title, p.Platform, critics, users)
+				if llmErr == nil && summary != nil {
+					if saveErr := m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
+						GamePlatformID: p.ID,
+						CriticPros:     summary.CriticPros,
+						CriticCons:     summary.CriticCons,
+						UserPros:       summary.UserPros,
+						UserCons:       summary.UserCons,
+					}); saveErr != nil {
+						m.addLog(fmt.Sprintf("  ⚠️ [Backfill] Ошибка сохранения резюме \"%s\" (%s): %v", g.Title, p.Platform, saveErr))
+						continue
+					}
+					count++
+					m.addLog(fmt.Sprintf("  🤖 [Backfill] Добавлено резюме для \"%s\" (%s)", g.Title, p.Platform))
 				}
 			}
-			summary, llmErr := m.llm.SummarizeReviews(ctx, g.Title, p.Platform, critics, users)
-			if llmErr == nil && summary != nil {
-				_ = m.db.UpsertPlatformSummary(ctx, &domain.PlatformSummary{
-					GamePlatformID: p.ID,
-					CriticPros:     summary.CriticPros,
-					CriticCons:     summary.CriticCons,
-					UserPros:       summary.UserPros,
-					UserCons:       summary.UserCons,
-				})
-				count++
-				m.addLog(fmt.Sprintf("  🤖 [Backfill] Добавлено резюме для \"%s\" (%s)", g.Title, p.Platform))
-			}
+		}
+
+		if len(games) < pageSize {
+			break
 		}
 	}
 	return count, nil
@@ -566,6 +644,19 @@ func (m *Manager) BackfillMissingSummaries(ctx context.Context) (int, error) {
 func (m *Manager) processGame(ctx context.Context, slug, today string, opts RecrawlOptions, force bool) (*domain.Game, error) {
 	var game *domain.Game
 	var reviews []domain.Review
+
+	// Ошибки стадий записи собираются, чтобы не выдавать частичное сохранение
+	// за успешное и не помечать игру обработанной.
+	var writeErrs []error
+	var writeMu sync.Mutex
+	recordWrite := func(stage string, err error) {
+		if err == nil {
+			return
+		}
+		writeMu.Lock()
+		writeErrs = append(writeErrs, fmt.Errorf("%s: %w", stage, err))
+		writeMu.Unlock()
+	}
 
 	if opts.Scrape {
 		var scrapeErr error
@@ -609,13 +700,14 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 			p := savedGame.Platforms[i]
 			if err := m.db.RecordScorePoint(ctx, p.ID, p.Metascore, p.Userscore); err != nil {
 				m.addLog(fmt.Sprintf("  ⚠️ [History] Ошибка записи истории оценок (%s): %v", p.Platform, err))
+				recordWrite("score history", err)
 			}
 		}
 	}
 
-	// 3. Распределение отзывов по платформам:
-	// отзыв с известной платформой сохраняется только в неё,
-	// отзыв без платформы - во все платформы (обратная совместимость с легаси-данными).
+	// 3. Распределение отзывов по платформам: отзыв сохраняется строго в свою
+	// платформу. Отзыв без установленной платформы не сохраняется вовсе, чтобы
+	// не создавать ложную платформенную привязку.
 	type summaryJob struct {
 		platformIdx   int
 		title         string
@@ -626,17 +718,28 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 
 	savedCounts := make(map[int]int)
 	if opts.Scrape {
+		unattributed := 0
+		for _, r := range reviews {
+			if r.Platform == "" {
+				unattributed++
+			}
+		}
+		if unattributed > 0 {
+			m.addLog(fmt.Sprintf("  ⚠️ [Reviews] Пропущено отзывов без платформы: %d", unattributed))
+		}
+
 		for i, p := range savedGame.Platforms {
 			var platReviews []domain.Review
 			for _, r := range reviews {
-				if r.Platform != "" && r.Platform != p.Platform {
+				if r.Platform != p.Platform {
 					continue
 				}
 				rr := r
 				rr.GamePlatformID = p.ID
 				platReviews = append(platReviews, rr)
 			}
-			c, _ := m.db.SaveReviews(ctx, platReviews)
+			c, saveErr := m.db.SaveReviews(ctx, platReviews)
+			recordWrite("save reviews "+p.Platform, saveErr)
 			savedCounts[i] = c
 			if c > 0 {
 				m.addLog(fmt.Sprintf("  💾 [Reviews] Платформа %s: новых отзывов %d", p.Platform, c))
@@ -646,8 +749,12 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 
 	// Гидратация отзывов и резюме для возвращаемого объекта и генерации резюме
 	for i := range savedGame.Platforms {
-		savedGame.Platforms[i].Reviews, _ = m.db.GetReviewsByPlatformID(ctx, savedGame.Platforms[i].ID)
-		if sum, _ := m.db.GetPlatformSummary(ctx, savedGame.Platforms[i].ID); sum != nil {
+		revs, loadErr := m.db.GetReviewsByPlatformID(ctx, savedGame.Platforms[i].ID)
+		recordWrite("load reviews "+savedGame.Platforms[i].Platform, loadErr)
+		savedGame.Platforms[i].Reviews = revs
+		if sum, sumErr := m.db.GetPlatformSummary(ctx, savedGame.Platforms[i].ID); sumErr != nil {
+			recordWrite("load summary "+savedGame.Platforms[i].Platform, sumErr)
+		} else if sum != nil {
 			savedGame.Platforms[i].Summary = sum
 		}
 	}
@@ -728,7 +835,9 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 					UserPros:       res.result.UserPros,
 					UserCons:       res.result.UserCons,
 				}
-				_ = m.db.UpsertPlatformSummary(ctx, platformSummary)
+				if sumErr := m.db.UpsertPlatformSummary(ctx, platformSummary); sumErr != nil {
+					recordWrite("summary "+p.Platform, sumErr)
+				}
 				savedGame.Platforms[j.platformIdx].Summary = platformSummary
 				if m.llm.HasAPIKey() {
 					m.addLog(fmt.Sprintf("  🤖 [LLM] Резюме отзывов (%s) сгенерировано через %s", p.Platform, m.llm.ChatModel()))
@@ -749,6 +858,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 			} else if strings.TrimSpace(translated) != "" {
 				if err := m.db.SaveGameTranslation(ctx, savedGame.ID, translated); err != nil {
 					m.addLog(fmt.Sprintf("  ⚠️ [DB] Ошибка сохранения перевода описания: %v", err))
+					recordWrite("translation", err)
 				} else {
 					savedGame.DescriptionRU = translated
 					m.addLog("  🌐 [LLM] Описание игры переведено на русский")
@@ -764,7 +874,7 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		analysisWG.Add(1)
 		go func() {
 			defer analysisWG.Done()
-			m.runEmbedding(ctx, savedGame)
+			recordWrite("embedding", m.runEmbedding(ctx, savedGame))
 		}()
 	}
 
@@ -772,16 +882,29 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 		analysisWG.Add(1)
 		go func() {
 			defer analysisWG.Done()
-			m.runYouTubeAnalysis(ctx, savedGame, force)
+			recordWrite("youtube", m.runYouTubeAnalysis(ctx, savedGame, force))
 		}()
 	}
 
 	analysisWG.Wait()
 
-	// 8. Помечаем игру как обработанную (только при полном сборе)
+	// 8. Если обязательные стадии записи прошли, помечаем игру как обработанную.
+	// При частичном сбое игру не помечаем: она будет перечитана в следующем проходе.
+	writeMu.Lock()
+	failedStages := len(writeErrs)
+	joinedErr := errors.Join(writeErrs...)
+	writeMu.Unlock()
+
+	if failedStages > 0 {
+		m.addLog(fmt.Sprintf("  ⚠️ [DB] Игра \"%s\" сохранена частично (стадий с ошибкой: %d), повтор при следующем проходе", savedGame.Title, failedStages))
+		return savedGame, fmt.Errorf("game %s saved with %d failed stage(s): %w", slug, failedStages, joinedErr)
+	}
+
 	if opts.Scrape {
 		if today != "" {
-			_ = m.db.MarkProcessed(ctx, slug, today)
+			if err := m.db.MarkProcessed(ctx, slug, today); err != nil {
+				return savedGame, fmt.Errorf("mark processed: %w", err)
+			}
 			m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу на дату %s (UTC+3)", savedGame.Title, today))
 		} else {
 			m.addLog(fmt.Sprintf("  💾 [DB] Игра \"%s\" успешно сохранена в базу", savedGame.Title))
@@ -792,42 +915,55 @@ func (m *Manager) processGame(ctx context.Context, slug, today string, opts Recr
 }
 
 // runEmbedding генерирует и сохраняет векторное представление игры.
-func (m *Manager) runEmbedding(ctx context.Context, savedGame *domain.Game) {
+func (m *Manager) runEmbedding(ctx context.Context, savedGame *domain.Game) error {
 	textForEmbedding := fmt.Sprintf("%s. %s. Developer: %s", savedGame.Title, savedGame.Description, savedGame.Developer)
 	vec, embErr := m.llm.GetEmbedding(ctx, textForEmbedding)
 	if embErr != nil {
 		m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка получения вектора: %v", embErr))
-		return
+		return fmt.Errorf("get embedding: %w", embErr)
 	}
 	if len(vec) == 0 {
-		return
+		return nil
 	}
-	_ = m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
+	if err := m.db.SaveEmbedding(ctx, &domain.GameEmbedding{
 		GameID:     savedGame.ID,
 		Vector:     vec,
 		Dimensions: len(vec),
-	})
+	}); err != nil {
+		m.addLog(fmt.Sprintf("  ⚠️ [Embedding] Ошибка сохранения вектора: %v", err))
+		return fmt.Errorf("save embedding: %w", err)
+	}
 	if m.llm.HasAPIKey() {
 		m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор получен через %s (%d dims)", m.llm.EmbeddingModel(), len(vec)))
 	} else {
 		m.addLog(fmt.Sprintf("  ✨ [Embedding] Вектор сгенерирован локально (детерминированный фоллбэк, %d dims)", len(vec)))
 	}
+	return nil
 }
 
 // runYouTubeAnalysis ищет летсплей и сохраняет саммари. В обычном цикле пропускает
 // игру, если анализ уже есть; force=true (пересбор) обновляет его.
-func (m *Manager) runYouTubeAnalysis(ctx context.Context, savedGame *domain.Game, force bool) {
+func (m *Manager) runYouTubeAnalysis(ctx context.Context, savedGame *domain.Game, force bool) error {
 	if !force {
-		if existing, _ := m.db.GetYouTubeAnalysis(ctx, savedGame.ID); existing != nil {
-			return
+		existing, err := m.db.GetYouTubeAnalysis(ctx, savedGame.ID)
+		if err != nil {
+			return fmt.Errorf("get youtube analysis: %w", err)
+		}
+		if existing != nil {
+			return nil
 		}
 	}
 	ytAnalysis, ytErr := m.youtube.AnalyzeVideo(ctx, savedGame.ID, savedGame.Title)
 	if ytErr != nil {
 		m.addLog(fmt.Sprintf("  ⚠️ [YouTube] Летсплей не найден или ошибка: %v", ytErr))
-	} else if ytAnalysis != nil {
-		_ = m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis)
+		return nil
 	}
+	if ytAnalysis != nil {
+		if err := m.db.UpsertYouTubeAnalysis(ctx, ytAnalysis); err != nil {
+			return fmt.Errorf("save youtube analysis: %w", err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) applyCooldown(ctx context.Context) {

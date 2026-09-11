@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	"metacrawler/internal/config"
 	"metacrawler/internal/domain"
@@ -101,8 +103,8 @@ func sampleGame(slug string) (*domain.Game, []domain.Review) {
 		},
 	}
 	reviews := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "Critic1", Text: "Good game"},
-		{ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Awesome"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "Critic1", Text: "Good game", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeUser, Author: "User1", Text: "Awesome", Platform: "pc"},
 	}
 	return game, reviews
 }
@@ -138,7 +140,7 @@ func TestWorker_FirstRunOfDay_NewReleases(t *testing.T) {
 
 	nextPage, err := db.GetState(ctx, "current_page")
 	require.NoError(t, err)
-	require.Equal(t, "1", nextPage)
+	require.Empty(t, nextPage, "New Releases не трогает курсор обхода каталога")
 
 	// Проверяем, что обе игры помечены как обработанные сегодня
 	p1, _ := db.IsProcessedOnDate(ctx, "game-1", today)
@@ -183,18 +185,165 @@ func TestWorker_SubsequentRun_StrictPaginationNoDofetch(t *testing.T) {
 	require.Equal(t, "2", nextPage)
 }
 
+// TestWorker_ConcurrentRunsRejected проверяет атомарный глобальный lock:
+// второй цикл не должен стартовать, пока идет первый.
+func TestWorker_ConcurrentRunsRejected(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	gate := make(chan struct{})
+	started := make(chan struct{})
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Run(func(mock.Arguments) {
+		close(started)
+		<-gate
+	}).Return([]string{}, nil).Once()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = mgr.ExecuteCycle(ctx)
+	}()
+
+	<-started
+	_, err := mgr.ExecuteCycle(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already running")
+	require.True(t, mgr.IsRunning())
+
+	close(gate)
+	wg.Wait()
+	require.False(t, mgr.IsRunning())
+}
+
+// TestWorker_PageNotAdvancedOnProcessingError: при ошибке обработки игры
+// курсор страницы не продвигается, чтобы пакет был перечитан.
+func TestWorker_PageNotAdvancedOnProcessingError(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+	_ = db.SetState(ctx, "last_crawl_date", today)
+	_ = db.SetState(ctx, "current_page", "3")
+
+	scraperMock.On("FetchBrowsePage", mock.Anything, 3).Return([]string{"bad-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "bad-game").
+		Return((*domain.Game)(nil), []domain.Review(nil), fmt.Errorf("boom")).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	page, _ := db.GetState(ctx, "current_page")
+	require.Equal(t, "3", page, "курсор не должен продвигаться при ошибке обработки")
+}
+
+// TestWorker_NewReleasesCursorNotAdvancedOnError: сбой в первом запуске суток
+// не фиксирует дату, поэтому пакет будет перечитан.
+func TestWorker_NewReleasesCursorNotAdvancedOnError(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+
+	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"bad-game"}, nil).Once()
+	scraperMock.On("FetchGameDetails", mock.Anything, "bad-game").
+		Return((*domain.Game)(nil), []domain.Review(nil), fmt.Errorf("boom")).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	lastDate, _ := db.GetState(ctx, "last_crawl_date")
+	require.NotEqual(t, today, lastDate, "дата не должна фиксироваться при сбое обработки")
+}
+
+// TestWorker_PartialWriteDoesNotMarkProcessed: при сбое стадии записи игра не
+// помечается обработанной и не считается успешно сохранённой.
+func TestWorker_PartialWriteDoesNotMarkProcessed(t *testing.T) {
+	dsn := t.TempDir() + "/partial.db"
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{CrawlDelayMinMs: 1, CrawlDelayMaxMs: 2}
+	scraperMock := new(MockScraper)
+	llmMock := new(MockLLM)
+	mgr := worker.NewManager(db, scraperMock, llmMock, nil, cfg)
+
+	ctx := context.Background()
+	game, reviews := sampleGame("partial-game")
+	scraperMock.On("FetchGameDetails", mock.Anything, "partial-game").Return(game, reviews, nil).Once()
+	llmMock.On("GetEmbedding", mock.Anything, mock.Anything).Return([]float32{0.1}, nil).Once()
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&llm.SummaryResult{CriticPros: "p"}, nil).Maybe()
+
+	// Ломаем стадию эмбеддинга: таблицы нет, запись должна упасть.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP TABLE game_embeddings`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	_, err = mgr.RecrawlGame(ctx, "partial-game", worker.AllRecrawlOptions())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed stage")
+
+	today := domain.Now().Format("2006-01-02")
+	processed, err := db.IsProcessedOnDate(ctx, "partial-game", today)
+	require.NoError(t, err)
+	require.False(t, processed, "при сбое стадии игра не должна помечаться обработанной")
+}
+
+// TestWorker_BackfillMissingSummaries_AllGames: бэкфилл обходит все игры,
+// а не только первые (ранее был молчаливый лимит 1000).
+func TestWorker_BackfillMissingSummaries_AllGames(t *testing.T) {
+	db, _, llmMock, mgr := setupWorkerEnv(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		slug := fmt.Sprintf("bf-%d", i)
+		game := &domain.Game{Slug: slug, Title: "BF " + slug, Platforms: []domain.GamePlatform{{Platform: "pc"}}}
+		require.NoError(t, db.UpsertGame(ctx, game))
+		saved, err := db.GetGameBySlug(ctx, slug)
+		require.NoError(t, err)
+		_, err = db.SaveReviews(ctx, []domain.Review{{
+			GamePlatformID: saved.Platforms[0].ID,
+			ReviewType:     domain.ReviewTypeCritic,
+			Author:         "A",
+			Text:           "text",
+			ContentHash:    "hash-" + slug,
+		}})
+		require.NoError(t, err)
+	}
+
+	llmMock.On("SummarizeReviews", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&llm.SummaryResult{CriticPros: "p"}, nil)
+
+	count, err := mgr.BackfillMissingSummaries(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+}
+
 func TestWorker_DayRolloverReset(t *testing.T) {
 	db, scraperMock, llmMock, mgr := setupWorkerEnv(t)
 	defer db.Close()
 
 	ctx := context.Background()
 	yesterday := domain.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	today := domain.Now().Format("2006-01-02")
 
-	// Вчера были на странице 10
+	// Вчера остановились на странице 10
 	_ = db.SetState(ctx, "last_crawl_date", yesterday)
 	_ = db.SetState(ctx, "current_page", "10")
 
-	// Сегодня новый день -> должен сброситься на New Releases!
+	// Новый день: первый запуск добавляет New Releases, но НЕ сбрасывает
+	// курсор обхода каталога (актуализация идет циклически).
 	scraperMock.On("FetchNewReleases", mock.Anything).Return([]string{"new-game-today"}, nil).Once()
 
 	g, r := sampleGame("new-game-today")
@@ -208,10 +357,35 @@ func TestWorker_DayRolloverReset(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, processed)
 
-	// Страница сбросилась на 1 для последующих вызовов
+	date, err := db.GetState(ctx, "last_crawl_date")
+	require.NoError(t, err)
+	require.Equal(t, today, date)
+
 	page, err := db.GetState(ctx, "current_page")
 	require.NoError(t, err)
-	require.Equal(t, "1", page)
+	require.Equal(t, "10", page, "курсор каталога сохраняется между днями")
+}
+
+// TestWorker_CatalogWrapsAtEnd: пустая страница означает конец каталога,
+// курсор возвращается на страницу 1.
+func TestWorker_CatalogWrapsAtEnd(t *testing.T) {
+	db, scraperMock, _, mgr := setupWorkerEnv(t)
+	defer db.Close()
+
+	ctx := context.Background()
+	today := domain.Now().Format("2006-01-02")
+	_ = db.SetState(ctx, "last_crawl_date", today)
+	_ = db.SetState(ctx, "current_page", "42")
+
+	scraperMock.On("FetchBrowsePage", mock.Anything, 42).Return([]string{}, nil).Once()
+
+	processed, err := mgr.ExecuteCycle(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, processed)
+
+	page, err := db.GetState(ctx, "current_page")
+	require.NoError(t, err)
+	require.Equal(t, "1", page, "после конца каталога курсор уходит на 1")
 }
 
 func TestWorker_ForcedModes(t *testing.T) {
@@ -288,10 +462,10 @@ func TestWorker_ReviewPlatformAttribution(t *testing.T) {
 		byPlatform[p.Platform] = authors
 	}
 
-	// Отзыв с платформой должен попасть только в свою платформу,
-	// отзыв без платформы - во все (обратная совместимость).
-	require.ElementsMatch(t, []string{"CriticPC", "CriticAny"}, byPlatform["pc"])
-	require.ElementsMatch(t, []string{"CriticPS5", "CriticAny"}, byPlatform["playstation-5"])
+	// Отзыв без установленной платформы не сохраняется ни на одну платформу
+	// (строгая платформенная привязка, без копирования на все).
+	require.ElementsMatch(t, []string{"CriticPC"}, byPlatform["pc"])
+	require.ElementsMatch(t, []string{"CriticPS5"}, byPlatform["playstation-5"])
 }
 
 func TestWorker_LLMError_NoSummaryStored(t *testing.T) {
@@ -459,7 +633,7 @@ func TestWorker_RecrawlForcesSummaryRegen(t *testing.T) {
 		},
 	}
 	revs := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "First review", Platform: "pc"},
 	}
 	scraperMock.On("FetchGameDetails", mock.Anything, "force-game").Return(game, revs, nil).Once()
 
@@ -635,7 +809,9 @@ func TestWorker_ParallelPlatformSummaries(t *testing.T) {
 		},
 	}
 	revs := []domain.Review{
-		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "Review one"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C1", Text: "Review one", Platform: "pc"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C2", Text: "Review two", Platform: "playstation-5"},
+		{ReviewType: domain.ReviewTypeCritic, Author: "C3", Text: "Review three", Platform: "xbox-series-x"},
 	}
 	scraperMock.On("FetchGameDetails", mock.Anything, "parallel-game").Return(game, revs, nil).Once()
 

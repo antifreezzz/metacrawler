@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"metacrawler/internal/config"
@@ -26,7 +28,11 @@ type Server struct {
 	llmClient          *llm.Client
 	cfg                *config.Config
 	auth               *AuthManager
+	loginLimiter       *loginLimiter
+	metrics            *httpMetrics
+	embCache           embeddingsCache
 	router             *http.ServeMux
+	handler            http.Handler
 	indexTemplate      *template.Template
 	detailTemplate     *template.Template
 	listTemplate       *template.Template
@@ -34,23 +40,119 @@ type Server struct {
 	loginTemplate      *template.Template
 }
 
+// embeddingsCache кэширует все векторы, чтобы не сканировать таблицу
+// эмбеддингов на каждый просмотр карточки.
+type embeddingsCache struct {
+	mu      sync.Mutex
+	data    []domain.GameEmbedding
+	expires time.Time
+}
+
+const embeddingsCacheTTL = 2 * time.Minute
+
+func (s *Server) cachedEmbeddings(ctx context.Context) []domain.GameEmbedding {
+	s.embCache.mu.Lock()
+	defer s.embCache.mu.Unlock()
+
+	if s.embCache.data != nil && time.Now().Before(s.embCache.expires) {
+		return s.embCache.data
+	}
+	all, err := s.db.GetAllEmbeddings(ctx)
+	if err != nil {
+		return s.embCache.data
+	}
+	s.embCache.data = all
+	s.embCache.expires = time.Now().Add(embeddingsCacheTTL)
+	return all
+}
+
 func New(db *storage.DB, workerMgr *worker.Manager, llmClient *llm.Client, cfg *config.Config) *Server {
 	s := &Server{
-		db:        db,
-		workerMgr: workerMgr,
-		llmClient: llmClient,
-		cfg:       cfg,
-		auth:      NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret),
-		router:    http.NewServeMux(),
+		db:           db,
+		workerMgr:    workerMgr,
+		llmClient:    llmClient,
+		cfg:          cfg,
+		auth:         NewAuthManager(cfg.AdminUsername, cfg.AdminPassword, cfg.SessionSecret, cfg.CookieSecure),
+		loginLimiter: newLoginLimiter(5, time.Minute),
+		metrics:      newHTTPMetrics(),
+		router:       http.NewServeMux(),
 	}
 
 	s.loadTemplates()
 	s.routes()
+	s.handler = s.requestIDMiddleware(s.loggingMiddleware(s.securityMiddleware(s.router)))
 	return s
 }
 
-func (s *Server) Router() *http.ServeMux {
-	return s.router
+// Router возвращает обработчик со всеми middleware (защита от cross-origin POST и т.п.).
+func (s *Server) Router() http.Handler {
+	return s.handler
+}
+
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
+// securityMiddleware блокирует cross-origin state-changing запросы. Браузер
+// всегда шлет Origin на межсайтовый POST/fetch, поэтому проверка Origin/Referer
+// закрывает CSRF; запросы без Origin (curl, Basic Auth) пропускаются.
+// Также выставляет базовые security-заголовки и ограничивает размер тела.
+func (s *Server) securityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		if requestIsHTTPS(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
+		if isStateChanging(r.Method) && !sameOrigin(r) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// handleReadyz - readiness-проверка: сервис готов, если доступна БД.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := s.db.Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"not ready"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
+}
+
+func isStateChanging(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Header.Get("Referer")
+	}
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 func (s *Server) loadTemplates() {
@@ -177,6 +279,8 @@ func (s *Server) routes() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	s.router.HandleFunc("GET /readyz", s.handleReadyz)
+	s.router.HandleFunc("GET /metrics", s.handleMetrics)
 	s.router.HandleFunc("GET /", s.handleIndex)
 	s.router.HandleFunc("GET /login", s.handleLoginPage)
 	s.router.HandleFunc("POST /login", s.handleLoginSubmit)
@@ -370,12 +474,24 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid login form", http.StatusBadRequest)
+		return
+	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	next := sanitizeRedirectURL(r.FormValue("next"))
 
+	ip := clientIP(r)
+	if !s.loginLimiter.allowed(ip) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"too many login attempts, try again later"}`))
+		return
+	}
+
 	if !s.auth.Authenticate(username, password) {
+		s.loginLimiter.fail(ip)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		data := LoginPageData{
@@ -387,6 +503,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.loginLimiter.reset(ip)
 	cookie := s.auth.GenerateSessionCookie(username)
 	http.SetCookie(w, cookie)
 	http.Redirect(w, r, next, http.StatusFound)
@@ -598,45 +715,26 @@ func (s *Server) handleGameDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Подтягиваем резюме и историю оценок для каждой платформы
+	// Подтягиваем резюме и историю оценок для каждой платформы.
+	// GET строго read-only: недостающие резюме догенерирует воркер/бэкфилл,
+	// а не публичный просмотр карточки.
 	for i := range game.Platforms {
-		summary, _ := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID)
-		reviews, _ := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
-		game.Platforms[i].Reviews = reviews
+		reviews, err := s.db.GetReviewsByPlatformID(ctx, game.Platforms[i].ID)
+		if err == nil {
+			game.Platforms[i].Reviews = reviews
+		}
 		game.Platforms[i].ScoreHistory, _ = s.db.GetScoreHistory(ctx, game.Platforms[i].ID)
-		if summary != nil {
+		if summary, sumErr := s.db.GetPlatformSummary(ctx, game.Platforms[i].ID); sumErr == nil && summary != nil {
 			game.Platforms[i].Summary = summary
-		} else if len(reviews) > 0 {
-			// На лету генерируем резюме отзывов (с фоллбэком)
-			var critics, users []domain.Review
-			for _, r := range reviews {
-				if r.ReviewType == domain.ReviewTypeCritic {
-					critics = append(critics, r)
-				} else {
-					users = append(users, r)
-				}
-			}
-			sumRes, llmErr := s.llmClient.SummarizeReviews(ctx, game.Title, game.Platforms[i].Platform, critics, users)
-			if llmErr == nil && sumRes != nil {
-				newSum := &domain.PlatformSummary{
-					GamePlatformID: game.Platforms[i].ID,
-					CriticPros:     sumRes.CriticPros,
-					CriticCons:     sumRes.CriticCons,
-					UserPros:       sumRes.UserPros,
-					UserCons:       sumRes.UserCons,
-				}
-				_ = s.db.UpsertPlatformSummary(ctx, newSum)
-				game.Platforms[i].Summary = newSum
-			}
 		}
 	}
 
 	// Подтягиваем YouTube анализ летсплея
 	ytAnalysis, _ := s.db.GetYouTubeAnalysis(ctx, game.ID)
 
-	// Подбор похожих игр на основе эмбеддингов
+	// Подбор похожих игр на основе эмбеддингов (векторы кэшируются)
 	var similarGames []domain.Game
-	allEmbeddings, _ := s.db.GetAllEmbeddings(ctx)
+	allEmbeddings := s.cachedEmbeddings(ctx)
 	var targetVec []float32
 	for _, emb := range allEmbeddings {
 		if emb.GameID == game.ID {
@@ -687,7 +785,10 @@ func (s *Server) handleMonitoring(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkerRun(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
 	modeParam := r.URL.Query().Get("mode")
 	pageParam := r.URL.Query().Get("page")
 	if pageParam == "" {
@@ -707,6 +808,13 @@ func (s *Server) handleWorkerRun(w http.ResponseWriter, r *http.Request) {
 	pageInt := 0
 	if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
 		pageInt = p
+	}
+
+	if s.workerMgr.IsRunning() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":"already_running"}`))
+		return
 	}
 
 	go func() {
@@ -730,6 +838,9 @@ func (s *Server) handleWorkerEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	// SSE - долгоживущий поток: снимаем общий WriteTimeout сервера для него.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

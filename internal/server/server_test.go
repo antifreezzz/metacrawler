@@ -237,11 +237,6 @@ type rssFeed struct {
 	} `xml:"channel"`
 }
 
-type rssChan struct {
-	Title string `xml:"title"`
-	Link  string `xml:"link"`
-}
-
 type rssItem struct {
 	Title       string `xml:"title"`
 	Link        string `xml:"link"`
@@ -651,4 +646,97 @@ func TestLogin_OpenRedirectPrevention(t *testing.T) {
 	srv.Router().ServeHTTP(recValid, reqValid)
 	require.Equal(t, http.StatusFound, recValid.Code)
 	require.Equal(t, "/games/elden-ring", recValid.Header().Get("Location"))
+}
+
+// TestGameDetailHandler_IsReadOnly: публичный GET карточки не должен обращаться
+// к LLM и писать резюме в БД (это делает воркер/бэкфилл).
+func TestGameDetailHandler_IsReadOnly(t *testing.T) {
+	var llmHits int
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmHits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer llmSrv.Close()
+
+	db, err := storage.New(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{}
+	llmClient := llm.NewClient(llmSrv.URL, "test-key", "gpt-4o-mini", "local")
+	mgr := worker.NewManager(db, &dummyScraper{}, llmClient, nil, cfg)
+	srv := server.New(db, mgr, llmClient, cfg)
+
+	ctx := context.Background()
+	game := &domain.Game{
+		Slug:      "detail-game",
+		Title:     "Detail Game",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "detail-game")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+	_, err = db.SaveReviews(ctx, []domain.Review{{
+		GamePlatformID: platID,
+		ReviewType:     domain.ReviewTypeCritic,
+		Author:         "Critic",
+		Text:           "Solid game.",
+		ContentHash:    "hash-detail",
+	}})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/games/detail-game", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, llmHits, "GET карточки не должен обращаться к LLM")
+
+	summary, err := db.GetPlatformSummary(ctx, platID)
+	require.NoError(t, err)
+	require.Nil(t, summary, "GET карточки не должен писать резюме в БД")
+}
+
+func TestRequestIDAndMetrics(t *testing.T) {
+	srv, db := setupServer(t)
+	defer db.Close()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.NotEmpty(t, rec.Header().Get("X-Request-ID"))
+
+	reqID := "test-correlation-id"
+	req2 := httptest.NewRequest("GET", "/healthz", nil)
+	req2.Header.Set("X-Request-ID", reqID)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, reqID, rec2.Header().Get("X-Request-ID"))
+
+	mreq := httptest.NewRequest("GET", "/metrics", nil)
+	mrec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(mrec, mreq)
+	require.Equal(t, http.StatusOK, mrec.Code)
+	require.Contains(t, mrec.Body.String(), "metacrawler_http_requests_total")
+	require.Contains(t, mrec.Body.String(), `method="GET"`)
+	require.Contains(t, mrec.Body.String(), "metacrawler_worker_running")
+}
+
+func TestReadyz(t *testing.T) {
+	srv, db := setupServer(t)
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "ready")
+
+	require.NoError(t, db.Close())
+
+	req2 := httptest.NewRequest("GET", "/readyz", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusServiceUnavailable, rec2.Code)
 }

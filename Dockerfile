@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for Metacrawler (Pure Go SQLite, Alpine)
 
 # 1. Builder Stage
-FROM golang:alpine AS builder
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 
 WORKDIR /src
 
@@ -18,13 +18,23 @@ COPY web/ web/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/server ./cmd/server
 
 # 2. Production Runner Stage
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.revision="${VERSION}"
 
 WORKDIR /app
 
-# Устанавливаем su-exec, nodejs, ffmpeg и актуальный бинарник yt-dlp для решения JS-челленджей YouTube и обработки аудио
+# yt-dlp пинится по версии и SHA256: образ воспроизводим и не доверяет
+# изменяемому артефакту latest.
+ARG YTDLP_VERSION=2026.08.19
+ARG YTDLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
+
+# Устанавливаем su-exec, nodejs, ffmpeg и зафиксированный бинарник yt-dlp для
+# решения JS-челленджей YouTube и обработки аудио.
 RUN apk add --no-cache ca-certificates tzdata su-exec nodejs ffmpeg curl python3 && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" -o /usr/local/bin/yt-dlp && \
+    echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     addgroup -S appgroup && adduser -S appuser -G appgroup && \
     mkdir -p /app/data && chown -R appuser:appgroup /app

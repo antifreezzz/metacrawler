@@ -120,7 +120,7 @@ func (v *Vectorizer) addFeature(vec []float32, feature string, weight float32) {
 	idx := int(h % uint64(v.dim))
 	// Знаковый хеш (+1 или -1) для снижения коллизий (Murmur/Weinberger hash trick)
 	sign := float32(1.0)
-	if (h >> 32)&1 == 1 {
+	if (h>>32)&1 == 1 {
 		sign = -1.0
 	}
 	vec[idx] += sign * weight

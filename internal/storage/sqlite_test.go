@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,9 +25,127 @@ func newTestDB(t *testing.T) *storage.DB {
 	return db
 }
 
+// resetSchemaMigrations имитирует легаси-БД без версионирования: сбрасывает
+// таблицу версий, чтобы следующее открытие заново применило все миграции.
+func resetSchemaMigrations(t *testing.T, dsn string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP TABLE IF EXISTS schema_migrations`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+}
+
 func TestMigrate(t *testing.T) {
 	db := newTestDB(t)
 	require.NotNil(t, db)
+}
+
+// TestReadPool_SeesCommittedWrites проверяет, что пул чтения по файлу видит
+// закоммиченные данные (WAL), а не отдельную/устаревшую БД.
+func TestReadPool_SeesCommittedWrites(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/pool.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertGame(ctx, &domain.Game{Slug: "pool-game", Title: "Pool Game"}))
+
+	game, err := db.GetGameBySlug(ctx, "pool-game")
+	require.NoError(t, err)
+	require.NotNil(t, game)
+	require.Equal(t, "Pool Game", game.Title)
+}
+
+// TestReadPool_ConcurrentReadsWithWrites гоняет чтения и записи параллельно,
+// проверяя под -race отсутствие гонок и блокировок.
+func TestReadPool_ConcurrentReadsWithWrites(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/pool_concurrent.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertGame(ctx, &domain.Game{Slug: "seed", Title: "Seed"}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = db.SetState(ctx, "cursor", fmt.Sprintf("%d", i))
+		}
+	}()
+
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				_, _ = db.GetGameBySlug(ctx, "seed")
+				_, _ = db.ListGames(ctx, storage.ListFilter{Limit: 10})
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestMigrate_RecordsSchemaVersion(t *testing.T) {
+	dsn := t.TempDir() + "/schema_version.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	defer raw.Close()
+
+	var version int
+	require.NoError(t, raw.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
+	require.Equal(t, 5, version, "все миграции должны быть зафиксированы в schema_migrations")
+}
+
+// TestMigrate_DoesNotRerunCleanupsOnEveryOpen фиксирует контракт: разрушительные
+// чистки теперь выполняются один раз как версия схемы, а не при каждом старте.
+func TestMigrate_DoesNotRerunCleanupsOnEveryOpen(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/no_rerun.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	game := &domain.Game{
+		Slug:      "no-rerun",
+		Title:     "No Rerun",
+		Platforms: []domain.GamePlatform{{Platform: "pc"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	saved, err := db.GetGameBySlug(ctx, "no-rerun")
+	require.NoError(t, err)
+	platID := saved.Platforms[0].ID
+	require.NoError(t, db.Close())
+
+	// Некорректная строка (платформа не совпадает с платформой игры) добавлена
+	// напрямую уже после миграции; версии не сбрасываем.
+	raw, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	_, err = raw.ExecContext(ctx, `
+		INSERT INTO game_reviews (game_platform_id, review_type, author, score, text, content_hash, date_str, platform)
+		VALUES (?, 'critic', 'WrongPlatform', NULL, 'wrong', 'hash-wrong', '', 'playstation-5')
+	`, platID)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	revs, err := db2.GetReviewsByPlatformID(ctx, platID)
+	require.NoError(t, err)
+	require.Len(t, revs, 1, "чистки не должны повторяться при каждом открытии БД")
 }
 
 func TestGameRepository_UpsertWithPlatforms(t *testing.T) {
@@ -296,7 +415,8 @@ func TestMigrate_RemovesMismatchedReviewPlatformRows(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()
@@ -419,7 +539,8 @@ func TestMigrate_RemovesFabricatedSummaries(t *testing.T) {
 	}))
 	require.NoError(t, db.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()
@@ -474,7 +595,8 @@ func TestMigrate_CleansLegacyGluedReviewsAndMultiPlatformDups(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
 
-	// Повторное открытие запускает миграцию
+	// Повторное открытие легаси-БД запускает миграцию
+	resetSchemaMigrations(t, dsn)
 	db2, err := storage.New(dsn)
 	require.NoError(t, err)
 	defer db2.Close()
@@ -658,6 +780,32 @@ func TestListGames_ReleaseDateSorting(t *testing.T) {
 	require.Equal(t, "2020-01-15", games[2].ReleaseDate)
 }
 
+// TestMigrate_RemovesFabricatedAllPlatform проверяет чистку искусственной
+// платформы "all", которая создавалась, когда карточки платформ не распознавались.
+func TestMigrate_RemovesFabricatedAllPlatform(t *testing.T) {
+	ctx := context.Background()
+	dsn := t.TempDir() + "/all_platform.db"
+
+	db, err := storage.New(dsn)
+	require.NoError(t, err)
+	game := &domain.Game{
+		Slug:      "all-game",
+		Title:     "All Game",
+		Platforms: []domain.GamePlatform{{Platform: "all", PlatformURL: "/game/all-game"}},
+	}
+	require.NoError(t, db.UpsertGame(ctx, game))
+	require.NoError(t, db.Close())
+
+	resetSchemaMigrations(t, dsn)
+	db2, err := storage.New(dsn)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	saved, err := db2.GetGameBySlug(ctx, "all-game")
+	require.NoError(t, err)
+	require.Empty(t, saved.Platforms, "искусственная платформа all должна быть удалена миграцией")
+}
+
 func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -689,6 +837,33 @@ func TestYouTubeAnalysis_UpsertAndGet(t *testing.T) {
 	require.Equal(t, "ProGamer", fetched.ChannelName)
 	require.Equal(t, int64(1500000), fetched.ViewCount)
 	require.Contains(t, fetched.Summary, "Блоггер в восторге")
+	require.Equal(t, domain.YouTubeStatusAnalyzed, fetched.Status)
+}
+
+// TestYouTubeAnalysis_StatusRoundTrip фиксирует честный статус анализа:
+// ролик без транскрипта хранится отдельно от полноценного вывода.
+func TestYouTubeAnalysis_StatusRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	game := &domain.Game{ID: "g-yt-2", Slug: "silent-game", Title: "Silent Game"}
+	require.NoError(t, db.UpsertGame(ctx, game))
+
+	require.NoError(t, db.UpsertYouTubeAnalysis(ctx, &domain.YouTubeAnalysis{
+		GameID:      game.ID,
+		VideoID:     "vid-no-subs",
+		VideoTitle:  "Silent Game Gameplay",
+		VideoURL:    "https://www.youtube.com/watch?v=vid-no-subs",
+		ChannelName: "QuietPlayer",
+		Summary:     "",
+		Status:      domain.YouTubeStatusNoTranscript,
+	}))
+
+	fetched, err := db.GetYouTubeAnalysis(ctx, game.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.Equal(t, domain.YouTubeStatusNoTranscript, fetched.Status)
+	require.Empty(t, fetched.Summary)
 }
 
 func TestCountGames_WithFilters(t *testing.T) {

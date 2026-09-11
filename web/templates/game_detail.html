@@ -181,7 +181,7 @@
           Главные впечатления
         </h3>
         <p class="body-copy">
-          {{if .YouTube.Summary}}{{.YouTube.Summary}}{{else}}Резюме ролика пока
+          {{if .YouTube.Summary}}{{.YouTube.Summary}}{{else if eq .YouTube.Status "no_transcript"}}Транскрипт ролика недоступен, вывод по словам блогера не сформирован.{{else}}Резюме ролика пока
           не готово.{{end}}
         </p>
       </div>

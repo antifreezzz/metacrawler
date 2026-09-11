@@ -202,71 +202,9 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 		game.ReleaseDate = NormalizeReleaseDate(strings.TrimSpace(dateText))
 	}
 
-	// 3. Извлечение Userscore для игры / дефолтной платформы
-	var defaultUserScore *float64
-	// Вариант 1: Поиск по блокам global-score-wrapper
-	doc.Find("[data-testid='global-score-wrapper']").Each(func(i int, s *goquery.Selection) {
-		header := strings.ToLower(s.Find("[data-testid='global-score-header']").Text())
-		if strings.Contains(header, "user score") {
-			valStr := strings.TrimSpace(s.Find("[data-testid='global-score-value']").Text())
-			if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
-				if val, err := strconv.ParseFloat(valStr, 64); err == nil {
-					defaultUserScore = &val
-				}
-			}
-		}
-	})
-
-	// Вариант 2 (fallback): Если wrapper не найден или структура изменилась, поиск от global-score-header вверх
-	if defaultUserScore == nil {
-		doc.Find("[data-testid='global-score-header']").Each(func(i int, s *goquery.Selection) {
-			if defaultUserScore != nil {
-				return
-			}
-			if strings.Contains(strings.ToLower(s.Text()), "user score") {
-				wrapper := s.Closest("[data-testid='global-score-wrapper']")
-				if wrapper.Length() == 0 {
-					wrapper = s.ParentsFiltered(".flex").Last()
-				}
-				valStr := strings.TrimSpace(wrapper.Find("[data-testid='global-score-value']").Text())
-				if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
-					if val, err := strconv.ParseFloat(valStr, 64); err == nil {
-						defaultUserScore = &val
-					}
-				}
-			}
-		})
-	}
-
-	// Вариант 3 (fallback): Поиск по атрибутам title/aria-label блока global-score
-	if defaultUserScore == nil {
-		doc.Find("[data-testid='global-score'] [title*='User score'], [data-testid='global-score'] [aria-label*='User score']").Each(func(i int, s *goquery.Selection) {
-			if defaultUserScore != nil {
-				return
-			}
-			valStr := strings.TrimSpace(s.Find("[data-testid='global-score-value']").Text())
-			if valStr == "" {
-				raw, exists := s.Attr("title")
-				if !exists || raw == "" {
-					raw, _ = s.Attr("aria-label")
-				}
-				parts := strings.Fields(raw)
-				for idx, part := range parts {
-					if strings.ToLower(part) == "score" && idx+1 < len(parts) {
-						valStr = parts[idx+1]
-						break
-					}
-				}
-			}
-			if valStr != "" && strings.ToLower(valStr) != "tbd" && strings.ToLower(valStr) != "null" {
-				if val, err := strconv.ParseFloat(valStr, 64); err == nil {
-					defaultUserScore = &val
-				}
-			}
-		})
-	}
-
-	// 4. Платформы и Metascore
+	// 3. Платформы и Metascore. Userscore намеренно не заполняется здесь:
+	// он принадлежит конкретной платформе и извлекается клиентом с её страницы
+	// user-reviews (ParseUserScore), чтобы одно значение не копировалось на все платформы.
 	platformMap := make(map[string]domain.GamePlatform)
 
 	doc.Find("a[data-testid='product-score-card'], a.product-score-card").Each(func(i int, s *goquery.Selection) {
@@ -299,29 +237,87 @@ func ParseGameDetails(slug string, data []byte) (*domain.Game, []domain.Review, 
 		platformMap[platName] = domain.GamePlatform{
 			Platform:    platName,
 			Metascore:   metascore,
-			Userscore:   defaultUserScore,
 			PlatformURL: href,
 		}
 	})
 
-	// Если карточки не найдены, создаем дефолтную платформу "all"
-	if len(platformMap) == 0 {
-		platformMap["all"] = domain.GamePlatform{
-			Platform:    "all",
-			PlatformURL: "/game/" + slug,
-			Userscore:   defaultUserScore,
-		}
-	}
+	// Если карточки платформ не распознаны, игра остается без платформ:
+	// искусственная платформа "all" не создается (честность данных).
 
 	for _, p := range platformMap {
 		game.Platforms = append(game.Platforms, p)
 	}
 
-	// 5. Парсинг отзывов: карточки лежат в общем контейнере product-reviews,
+	// 4. Парсинг отзывов: карточки лежат в общем контейнере product-reviews,
 	// тип отзыва определяется секцией (critic-reviews[-bottom] / user-reviews[-bottom]).
 	reviews := parseReviewCards(doc, "")
 
 	return game, reviews, nil
+}
+
+// ParseUserScore извлекает userscore конкретной платформы со страницы /user-reviews/.
+// Значение лежит в блоке score-card-overview: title/aria-label вида
+// "User score 8.4 out of 10" либо текстом в .c-siteReviewScore span.
+// Возвращает nil для "tbd" и при отсутствии данных.
+func ParseUserScore(data []byte) *float64 {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+
+	scope := doc.Find("[data-testid='score-card-overview']")
+	if scope.Length() == 0 {
+		scope = doc.Selection
+	}
+
+	var score *float64
+	scope.Find(".c-siteReviewScore").EachWithBreak(func(_ int, s *goquery.Selection) bool {
+		for _, attr := range []string{"title", "aria-label"} {
+			raw, ok := s.Attr(attr)
+			if !ok || !strings.Contains(strings.ToLower(raw), "user score") {
+				continue
+			}
+			if v, ok := valueAfterScoreKeyword(raw); ok {
+				score = &v
+				return false
+			}
+		}
+		return true
+	})
+	if score != nil {
+		return score
+	}
+
+	if v, ok := firstFloat(scope.Find(".c-siteReviewScore span").First().Text()); ok {
+		return &v
+	}
+	return nil
+}
+
+// valueAfterScoreKeyword возвращает число, идущее сразу после слова "score"
+// в подписи вида "User score 8.4 out of 10". Для "tbd" возвращает false.
+func valueAfterScoreKeyword(label string) (float64, bool) {
+	fields := strings.Fields(strings.ToLower(label))
+	for i, field := range fields {
+		if field != "score" || i+1 >= len(fields) {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.Trim(fields[i+1], ",;:"), 64); err == nil {
+			return v, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// firstFloat возвращает первое число в строке, например "8.4" или "8.4/10".
+func firstFloat(s string) (float64, bool) {
+	for _, field := range strings.Fields(s) {
+		if v, err := strconv.ParseFloat(strings.Trim(field, ",;:"), 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 // ParseReviewSubpage парсит страницу полного списка отзывов (/critic-reviews/ или /user-reviews/).

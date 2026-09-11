@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -68,4 +69,34 @@ func TestLoadConfig_TranscriptMaxChars(t *testing.T) {
 
 	cfg = config.Load()
 	require.Equal(t, 12000, cfg.TranscriptMaxChars)
+}
+
+func TestConfigValidate_RejectsMissingPassword(t *testing.T) {
+	cfg := &config.Config{AdminPassword: "", SessionSecret: strings.Repeat("a", 40)}
+	require.Error(t, cfg.Validate())
+}
+
+func TestConfigValidate_RejectsWeakPassword(t *testing.T) {
+	for _, pw := range []string{"admin", "password", "changeme", "12345678"} {
+		cfg := &config.Config{AdminPassword: pw, SessionSecret: strings.Repeat("a", 40)}
+		require.Error(t, cfg.Validate(), "password %q must be rejected", pw)
+	}
+}
+
+func TestConfigValidate_RejectsWeakSessionSecret(t *testing.T) {
+	cfg := &config.Config{AdminPassword: "s3cure-pass", SessionSecret: "metacrawler-secret-key-change-me"}
+	require.Error(t, cfg.Validate())
+
+	cfg = &config.Config{AdminPassword: "s3cure-pass", SessionSecret: "too-short"}
+	require.Error(t, cfg.Validate())
+}
+
+func TestConfigValidate_AcceptsStrongSecrets(t *testing.T) {
+	cfg := &config.Config{AdminPassword: "s3cure-pass-123", SessionSecret: strings.Repeat("x", 40)}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfigValidate_AllowsInsecureOptIn(t *testing.T) {
+	cfg := &config.Config{AdminPassword: "admin", SessionSecret: "weak", AllowInsecureDefaults: true}
+	require.NoError(t, cfg.Validate())
 }

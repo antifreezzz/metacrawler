@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"metacrawler/internal/backup"
 	"metacrawler/internal/config"
 	"metacrawler/internal/llm"
 	"metacrawler/internal/scraper"
@@ -20,7 +22,13 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg := config.Load()
+
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
 
 	// Гарантируем наличие директории для БД SQLite
 	if err := os.MkdirAll("data", 0755); err != nil {
@@ -68,11 +76,30 @@ func main() {
 		}
 	}()
 
+	// Периодические снапшоты БД с retention.
+	if cfg.BackupEnabled {
+		backupCtx, backupCancel := context.WithCancel(context.Background())
+		defer backupCancel()
+		scheduler := backup.New(
+			db,
+			cfg.BackupDir,
+			time.Duration(cfg.BackupIntervalHours)*time.Hour,
+			cfg.BackupRetention,
+		)
+		go scheduler.Run(backupCtx)
+		log.Printf("Backup scheduler started: dir=%s interval=%dh retention=%d", cfg.BackupDir, cfg.BackupIntervalHours, cfg.BackupRetention)
+	}
+
 	srv := server.New(db, workerMgr, llmClient, cfg)
 
 	httpServer := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: srv.Router(),
+		Addr:              ":" + cfg.Port,
+		Handler:           srv.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Graceful shutdown
