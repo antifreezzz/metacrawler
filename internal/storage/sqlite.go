@@ -71,6 +71,15 @@ func (d *DB) Ping(ctx context.Context) error {
 	return d.db.PingContext(ctx)
 }
 
+// BackupTo создает консистентную копию БД в path через VACUUM INTO.
+// Целевой файл не должен существовать.
+func (d *DB) BackupTo(ctx context.Context, path string) error {
+	if _, err := d.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("backup to %s: %w", path, err)
+	}
+	return nil
+}
+
 // migration - версионированная миграция схемы. Каждая применяется ровно один
 // раз и фиксируется в таблице schema_migrations в той же транзакции.
 type migration struct {

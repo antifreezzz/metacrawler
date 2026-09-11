@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,10 @@ type Config struct {
 	SessionSecret         string
 	AllowInsecureDefaults bool // разрешить слабые секреты (только для локальной разработки)
 	CookieSecure          bool // выставлять флаг Secure на cookie сессии (prod: true)
+	BackupEnabled         bool // периодические снапшоты БД
+	BackupDir             string
+	BackupIntervalHours   int
+	BackupRetention       int
 	WhisperURL            string
 	WhisperBinaryPath     string
 	WhisperModelPath      string
@@ -42,9 +47,15 @@ func Load() *Config {
 	llmBaseURL := getEnv("LLM_BASE_URL", "http://localhost:8080/v1")
 	llmAPIKey := getEnv("LLM_API_KEY", "")
 
+	dbPath := getEnv("DB_PATH", "data/metacrawler.db")
+	backupDir := getEnv("BACKUP_DIR", "")
+	if backupDir == "" {
+		backupDir = filepath.Join(filepath.Dir(dbPath), "backups")
+	}
+
 	return &Config{
 		Port:                  getEnv("PORT", "8079"),
-		DBPath:                getEnv("DB_PATH", "data/metacrawler.db"),
+		DBPath:                dbPath,
 		CronSchedule:          getEnv("CRON_SCHEDULE", "0 * * * *"),
 		CrawlDelayMinMs:       getEnvAsInt("CRAWL_DELAY_MIN_MS", 2000),
 		CrawlDelayMaxMs:       getEnvAsInt("CRAWL_DELAY_MAX_MS", 4000),
@@ -62,6 +73,10 @@ func Load() *Config {
 		SessionSecret:         getEnv("SESSION_SECRET", "metacrawler-secret-key-change-me"),
 		AllowInsecureDefaults: getEnvAsBool("ALLOW_INSECURE_DEFAULTS", false),
 		CookieSecure:          getEnvAsBool("COOKIE_SECURE", true),
+		BackupEnabled:         getEnvAsBool("BACKUP_ENABLED", true),
+		BackupDir:             backupDir,
+		BackupIntervalHours:   getEnvAsInt("BACKUP_INTERVAL_HOURS", 24),
+		BackupRetention:       getEnvAsInt("BACKUP_RETENTION", 7),
 		WhisperURL:            getEnv("WHISPER_URL", ""),
 		WhisperBinaryPath:     getEnv("WHISPER_BINARY_PATH", ""),
 		WhisperModelPath:      getEnv("WHISPER_MODEL_PATH", ""),

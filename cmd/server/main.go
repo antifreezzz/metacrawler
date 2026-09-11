@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"metacrawler/internal/backup"
 	"metacrawler/internal/config"
 	"metacrawler/internal/llm"
 	"metacrawler/internal/scraper"
@@ -74,6 +75,20 @@ func main() {
 			log.Printf("Backfill completed: generated %d missing review summaries", count)
 		}
 	}()
+
+	// Периодические снапшоты БД с retention.
+	if cfg.BackupEnabled {
+		backupCtx, backupCancel := context.WithCancel(context.Background())
+		defer backupCancel()
+		scheduler := backup.New(
+			db,
+			cfg.BackupDir,
+			time.Duration(cfg.BackupIntervalHours)*time.Hour,
+			cfg.BackupRetention,
+		)
+		go scheduler.Run(backupCtx)
+		log.Printf("Backup scheduler started: dir=%s interval=%dh retention=%d", cfg.BackupDir, cfg.BackupIntervalHours, cfg.BackupRetention)
+	}
 
 	srv := server.New(db, workerMgr, llmClient, cfg)
 

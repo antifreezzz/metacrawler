@@ -123,6 +123,24 @@ make docker-up
 
 ---
 
+## 💾 Бэкапы и восстановление
+
+Сервис периодически создает консистентные снапшоты БД (SQLite `VACUUM INTO`) в
+`BACKUP_DIR` (по умолчанию `<каталог БД>/backups`), храня последние `BACKUP_RETENTION`
+штук. Интервал задается `BACKUP_INTERVAL_HOURS` (по умолчанию 24ч), включение -
+`BACKUP_ENABLED`.
+
+Восстановление:
+```bash
+docker compose down
+cp data/backups/metacrawler-YYYYMMDD-HHMMSS.db data/metacrawler.db
+rm -f data/metacrawler.db-wal data/metacrawler.db-shm
+docker compose up -d
+```
+Проверьте `/readyz` и логи запуска.
+
+---
+
 ## 🌿 Рабочий процесс (ветки и Pull Request)
 
 Прямой пуш в `main` запрещён. Каждая единица работы ведётся в feature-ветке, по завершении открывается Pull Request:
